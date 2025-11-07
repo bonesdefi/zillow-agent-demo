@@ -305,7 +305,9 @@ async def search_properties(params: PropertySearchParams) -> List[Property]:
                     "TOWNHOUSE": ["TOWNHOUSE", "TOWN_HOUSE"],
                 }
                 allowed_types = type_mapping.get(property_type_upper, [property_type_upper])
-                if home_type not in allowed_types and property_type_upper not in home_type:
+                # Check if home_type matches any allowed type
+                if home_type not in allowed_types:
+                    # If no match, skip this property
                     continue
             
             filtered_props.append(prop_data)
