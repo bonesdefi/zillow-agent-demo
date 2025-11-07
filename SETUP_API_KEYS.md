@@ -11,10 +11,12 @@ cp .env.example .env
 
 ```bash
 # Anthropic API Key (for Claude AI)
-ANTHROPIC_API_KEY=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
+# Get from: https://console.anthropic.com/
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
 
 # RapidAPI Key (for Zillow data)
-RAPIDAPI_KEY=92fbc13ef2msh9f0570621ce0dfdp11d5d9jsnd051d5af23bf
+# Get from: https://rapidapi.com/marketplace/api/real-time-zillow-data
+RAPIDAPI_KEY=your_rapidapi_key_here
 
 # API Configuration
 ZILLOW_API_BASE_URL=https://real-time-zillow-data.p.rapidapi.com
