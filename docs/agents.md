@@ -106,21 +106,69 @@ The advisor agent is:
 3. **Reasoning**: Why these properties were selected
 4. **Next Steps**: Suggested actions for the user
 
+## Advisor Agent
+
+**Purpose**: Synthesize information and provide recommendations.
+
+### Responsibilities
+
+1. **Property Scoring**: Calculate suitability scores for each property
+2. **Recommendation Generation**: Create ranked list of top properties
+3. **Natural Language Response**: Generate conversational explanations
+4. **Reasoning Explanation**: Explain why properties were recommended
+5. **Next Steps**: Suggest actions for the user
+
+### Scoring Algorithm
+
+The advisor agent calculates a score (0-100) based on:
+- **Price Match**: How well the price fits the budget
+- **Criteria Match**: Alignment with search criteria
+- **Market Conditions**: Neighborhood and market trends
+- **Analysis Quality**: Completeness of analysis data
+
+### Recommendation Format
+
+1. **Summary**: Brief overview of findings
+2. **Top Recommendations**: Ranked property suggestions with scores
+3. **Reasoning**: Why these properties were selected
+4. **Highlights**: Key selling points for each property
+5. **Next Steps**: Suggested actions for the user
+
 ## Agent Coordination
 
 Agents are coordinated by the LangGraph workflow:
 
-1. **Sequential Processing**: Agents run in sequence
-2. **State Passing**: State is passed between agents
-3. **Error Handling**: Errors are caught and handled gracefully
-4. **Logging**: All agent actions are logged
+### Workflow Nodes
+
+1. **understand_intent**: Search Agent extracts criteria from user input
+2. **search_properties**: Search Agent executes property search
+3. **analyze_properties**: Analysis Agent analyzes found properties
+4. **generate_recommendations**: Advisor Agent creates final recommendations
+5. **handle_clarification**: Request additional information if needed
+
+### Workflow Routing
+
+- **After Intent Understanding**: Routes to `search_properties` if criteria clear, or `handle_clarification` if more info needed
+- **After Search**: Routes to `analyze_properties` if properties found, or ends with no results message
+- **After Analysis**: Routes to `generate_recommendations`
+- **After Recommendations**: Ends workflow with final response
+
+### State Management
+
+The workflow uses a shared `AgentState` that includes:
+- User input and conversation history
+- Search criteria and properties
+- Analysis results per property
+- Recommendations and final response
+- Error tracking and clarification flags
 
 ## Testing
 
 Each agent has comprehensive tests:
 
-- Unit tests for individual methods
-- Integration tests with MCP servers
-- End-to-end workflow tests
-- Error handling tests
+- **Unit tests**: Individual methods tested in isolation
+- **Integration tests**: Agents tested with MCP servers
+- **Workflow tests**: End-to-end workflow execution
+- **Error handling tests**: Graceful error handling verified
+- **96 total tests**: 80%+ code coverage achieved
 

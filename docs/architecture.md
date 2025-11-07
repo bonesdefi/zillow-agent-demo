@@ -82,10 +82,52 @@ All agents inherit from `BaseAgent` which provides:
 The workflow is defined as a state machine with the following nodes:
 
 1. **understand_intent**: Parse user input and extract search criteria
+   - Uses Search Agent to extract structured criteria
+   - Handles ambiguous requests
+   - Returns search criteria or clarification question
+
 2. **search_properties**: Execute property search
+   - Search Agent calls Real Estate MCP server
+   - Returns list of matching properties
+   - Handles empty results gracefully
+
 3. **analyze_properties**: Analyze found properties
+   - Analysis Agent processes top properties (limit 5)
+   - Gathers neighborhood, school, and market data
+   - Calculates affordability if income provided
+   - Returns analysis for each property
+
 4. **generate_recommendations**: Create final recommendations
+   - Advisor Agent scores and ranks properties
+   - Generates natural language explanations
+   - Creates final response with recommendations
+
 5. **handle_clarification**: Request additional information if needed
+   - Returns clarification question to user
+   - Ends workflow to await user response
+
+### Workflow Flow Diagram
+
+```mermaid
+graph TD
+    Start[User Input] --> UnderstandIntent[Understand Intent]
+    UnderstandIntent -->|Clear Criteria| Search[Search Properties]
+    UnderstandIntent -->|Needs Info| Clarify[Handle Clarification]
+    Clarify --> End1[End - Await Response]
+    Search -->|Properties Found| Analyze[Analyze Properties]
+    Search -->|No Results| End2[End - No Results]
+    Analyze --> Recommend[Generate Recommendations]
+    Recommend --> End3[End - Present Results]
+```
+
+### State Transitions
+
+- **Initial State**: User input received
+- **After Intent**: Search criteria extracted or clarification needed
+- **After Search**: Properties found or empty results
+- **After Analysis**: Analysis completed for each property
+- **After Recommendations**: Final response generated
+- **Final State**: Response ready for user
 
 ## Technology Choices & Rationale
 
