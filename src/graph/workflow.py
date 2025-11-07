@@ -18,18 +18,34 @@ logger = logging.getLogger(__name__)
 
 def _convert_to_base_state(state: AgentState) -> BaseAgentState:
     """Convert LangGraph state to BaseAgentState."""
-    return BaseAgentState(
-        user_input=state.get("user_input", ""),
-        conversation_history=state.get("conversation_history", []),
-        search_criteria=state.get("search_criteria"),
-        properties=state.get("properties", []),
-        analyses=state.get("analyses", {}),
-        recommendations=state.get("recommendations", []),
-        final_response=state.get("final_response", ""),
-        errors=state.get("errors", []),
-        needs_clarification=state.get("needs_clarification", False),
-        clarification_question=state.get("clarification_question"),
-    )
+    try:
+        return BaseAgentState(
+            user_input=state.get("user_input", ""),
+            conversation_history=state.get("conversation_history", []),
+            search_criteria=state.get("search_criteria"),
+            properties=state.get("properties", []),
+            analyses=state.get("analyses", {}),
+            recommendations=state.get("recommendations", []),
+            final_response=state.get("final_response", ""),
+            errors=state.get("errors", []),
+            needs_clarification=state.get("needs_clarification", False),
+            clarification_question=state.get("clarification_question"),
+        )
+    except Exception as e:
+        logger.error(f"Error converting to base state: {e}", exc_info=True)
+        # Return minimal valid state
+        return BaseAgentState(
+            user_input=state.get("user_input", ""),
+            conversation_history=state.get("conversation_history", []),
+            search_criteria=None,
+            properties=[],
+            analyses={},
+            recommendations=[],
+            final_response="",
+            errors=[f"State conversion error: {str(e)}"],
+            needs_clarification=False,
+            clarification_question=None,
+        )
 
 
 def _convert_from_base_state(
@@ -59,11 +75,24 @@ async def understand_intent_node(state: AgentState) -> AgentState:
     This node uses the SearchAgent to understand user intent.
     """
     logger.info("Workflow: Understanding user intent")
-
-    base_state = _convert_to_base_state(state)
-    search_agent = get_search_agent()
-    result = await search_agent.process(base_state)
-    return _convert_from_base_state(result, state)
+    
+    try:
+        base_state = _convert_to_base_state(state)
+        logger.info(f"Converted state - user_input: {base_state.user_input[:50] if base_state.user_input else 'None'}")
+        
+        search_agent = get_search_agent()
+        logger.info("Calling SearchAgent.process()")
+        result = await search_agent.process(base_state)
+        logger.info(f"SearchAgent returned - properties: {len(result.properties)}, criteria: {result.search_criteria is not None}")
+        
+        updated_state = _convert_from_base_state(result, state)
+        logger.info(f"Updated state - properties: {len(updated_state.get('properties', []))}, criteria: {updated_state.get('search_criteria') is not None}")
+        return updated_state
+    except Exception as e:
+        logger.error(f"Error in understand_intent_node: {e}", exc_info=True)
+        state["errors"] = state.get("errors", []) + [f"SearchAgent error: {str(e)}"]
+        state["final_response"] = f"I encountered an error while processing your request: {str(e)}"
+        return state
 
 
 async def search_properties_node(state: AgentState) -> AgentState:
@@ -85,11 +114,21 @@ async def analyze_properties_node(state: AgentState) -> AgentState:
     This node uses the AnalysisAgent to gather detailed information.
     """
     logger.info("Workflow: Analyzing properties")
-
-    base_state = _convert_to_base_state(state)
-    analysis_agent = get_analysis_agent()
-    result = await analysis_agent.process(base_state)
-    return _convert_from_base_state(result, state)
+    
+    try:
+        base_state = _convert_to_base_state(state)
+        logger.info(f"Analyzing {len(base_state.properties)} properties")
+        
+        analysis_agent = get_analysis_agent()
+        result = await analysis_agent.process(base_state)
+        logger.info(f"AnalysisAgent returned - analyses: {len(result.analyses)}")
+        
+        return _convert_from_base_state(result, state)
+    except Exception as e:
+        logger.error(f"Error in analyze_properties_node: {e}", exc_info=True)
+        state["errors"] = state.get("errors", []) + [f"AnalysisAgent error: {str(e)}"]
+        # Continue with existing state even if analysis fails
+        return state
 
 
 async def generate_recommendations_node(state: AgentState) -> AgentState:
@@ -99,11 +138,27 @@ async def generate_recommendations_node(state: AgentState) -> AgentState:
     This node uses the AdvisorAgent to synthesize information.
     """
     logger.info("Workflow: Generating recommendations")
-
-    base_state = _convert_to_base_state(state)
-    advisor_agent = get_advisor_agent()
-    result = await advisor_agent.process(base_state)
-    return _convert_from_base_state(result, state)
+    
+    try:
+        base_state = _convert_to_base_state(state)
+        logger.info(f"Generating recommendations for {len(base_state.properties)} properties")
+        
+        advisor_agent = get_advisor_agent()
+        result = await advisor_agent.process(base_state)
+        logger.info(f"AdvisorAgent returned - response length: {len(result.final_response)}, recommendations: {len(result.recommendations)}")
+        
+        updated_state = _convert_from_base_state(result, state)
+        logger.info(f"Final state - final_response: {updated_state.get('final_response', '')[:100]}")
+        return updated_state
+    except Exception as e:
+        logger.error(f"Error in generate_recommendations_node: {e}", exc_info=True)
+        state["errors"] = state.get("errors", []) + [f"AdvisorAgent error: {str(e)}"]
+        # Provide fallback response
+        if not state.get("final_response"):
+            state["final_response"] = (
+                f"I found {len(state.get('properties', []))} properties, but encountered an error generating recommendations: {str(e)}"
+            )
+        return state
 
 
 async def handle_clarification_node(state: AgentState) -> AgentState:
@@ -113,7 +168,19 @@ async def handle_clarification_node(state: AgentState) -> AgentState:
     This node prepares the state for user clarification.
     """
     logger.info("Workflow: Handling clarification request")
+    
+    # Ensure clarification question is set
+    clarification = state.get("clarification_question")
+    if not clarification:
+        clarification = "I need more information to help you. Could you please provide more details about what you're looking for?"
+        state["clarification_question"] = clarification
+    
+    # Set final response to clarification question
+    if not state.get("final_response"):
+        state["final_response"] = clarification
+    
     state["current_step"] = "clarification"
+    logger.info(f"Clarification node - question: {clarification[:100]}")
     return state
 
 
@@ -137,13 +204,19 @@ def route_after_search(state: AgentState) -> Literal["analyze", "end"]:
         "analyze" if properties found, "end" if no results
     """
     properties = state.get("properties", [])
+    logger.info(f"Routing after search - properties found: {len(properties)}")
+    
     if len(properties) == 0:
         logger.info("Workflow: No properties found, ending")
-        state["final_response"] = (
-            "I couldn't find any properties matching your criteria. "
-            "Please try adjusting your search parameters."
-        )
+        # Only set final_response if it's not already set
+        if not state.get("final_response"):
+            state["final_response"] = (
+                "I couldn't find any properties matching your criteria. "
+                "Please try adjusting your search parameters."
+            )
         return "end"
+    
+    logger.info(f"Routing to analyze - {len(properties)} properties to analyze")
     return "analyze"
 
 

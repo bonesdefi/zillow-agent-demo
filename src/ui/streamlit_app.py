@@ -332,29 +332,57 @@ async def process_user_message(user_input: str):
     try:
         # Process through workflow
         add_agent_log("Workflow", f"Processing: {user_input[:50]}...")
+        logger.info(f"Invoking workflow with user_input: {user_input}")
         
         result = await st.session_state.workflow.ainvoke(initial_state)
+        
+        logger.info(f"Workflow completed. Result keys: {result.keys() if isinstance(result, dict) else 'Not a dict'}")
+        logger.info(f"Final response: {result.get('final_response', 'None')[:100] if result.get('final_response') else 'None'}")
+        logger.info(f"Search criteria: {result.get('search_criteria')}")
+        logger.info(f"Properties count: {len(result.get('properties', []))}")
+        logger.info(f"Errors: {result.get('errors', [])}")
         
         # Update session state (result is AgentState TypedDict)
         if result.get("search_criteria"):
             st.session_state.search_criteria = result["search_criteria"]
             add_agent_log("Search", "Criteria extracted", result["search_criteria"])
+            logger.info(f"Updated search_criteria: {result['search_criteria']}")
+        else:
+            logger.warning("No search_criteria in result")
         
         if result.get("properties"):
             st.session_state.properties = result["properties"]
             add_agent_log("Search", f"Found {len(result['properties'])} properties")
+            logger.info(f"Updated properties: {len(result['properties'])}")
+        else:
+            logger.warning("No properties in result")
         
         if result.get("analyses"):
             st.session_state.analyses = result["analyses"]
             add_agent_log("Analysis", f"Analyzed {len(result['analyses'])} properties")
         
         # Get final response
-        final_response = result.get("final_response", "I've processed your request.")
+        final_response = result.get("final_response", "")
+        
+        # Handle errors
+        if result.get("errors"):
+            error_list = result["errors"]
+            logger.error(f"Workflow errors: {error_list}")
+            if not final_response:
+                final_response = f"I encountered some errors: {', '.join(error_list[:3])}"
         
         # Handle clarification
         if result.get("needs_clarification") and result.get("clarification_question"):
             final_response = result["clarification_question"]
             add_agent_log("Workflow", "Clarification needed")
+            logger.info("Clarification needed")
+        elif not final_response:
+            # Fallback response if nothing was generated
+            if result.get("properties"):
+                final_response = f"I found {len(result['properties'])} properties matching your criteria."
+            else:
+                final_response = "I processed your request, but couldn't find any properties. Please try adjusting your search criteria."
+            logger.warning(f"No final_response generated, using fallback: {final_response}")
         
         # Add assistant response
         st.session_state.messages.append({
@@ -364,6 +392,7 @@ async def process_user_message(user_input: str):
         })
         
         add_agent_log("Workflow", "Completed successfully")
+        logger.info(f"Added assistant response: {final_response[:100]}")
         
     except Exception as e:
         logger.error(f"Error processing message: {e}", exc_info=True)
@@ -373,7 +402,7 @@ async def process_user_message(user_input: str):
             "content": error_message,
             "timestamp": datetime.now()
         })
-        add_agent_log("System", f"Error: {str(e)}", {"error": str(e)})
+        add_agent_log("System", f"Error: {str(e)}", {"error": str(e), "traceback": str(e.__traceback__) if hasattr(e, '__traceback__') else None})
 
 
 def run_async(coro):
