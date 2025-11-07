@@ -4,6 +4,10 @@ import os
 from typing import Optional
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+from dotenv import load_dotenv
+
+# Load .env file at module import
+load_dotenv()
 
 
 class Settings(BaseSettings):

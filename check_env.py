@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Debug script to test workflow execution."""
+"""Check script to test env execution."""
 
 import asyncio
 import os
@@ -27,22 +27,22 @@ else:
     print("❌ WARNING: ANTHROPIC_API_KEY not found in environment!")
     print("   Make sure you have a .env file with ANTHROPIC_API_KEY set")
 
-from src.graph.workflow import create_workflow
+from src.graph.env import create_env
 from src.graph.state import AgentState
 
-async def test_workflow():
-    """Test workflow execution."""
+async def test_env():
+    """Test env execution."""
     print("=" * 60)
-    print("WORKFLOW DEBUG TEST")
+    print("ENV CHECK TEST")
     print("=" * 60)
     
-    # Create workflow
-    print("\n1. Creating workflow...")
+    # Create env
+    print("\n1. Creating env...")
     try:
-        workflow = create_workflow()
-        print("✅ Workflow created successfully")
+        env = create_env()
+        print("✅ Env created successfully")
     except Exception as e:
-        print(f"❌ Error creating workflow: {e}")
+        print(f"❌ Error creating env: {e}")
         import traceback
         traceback.print_exc()
         return
@@ -66,13 +66,13 @@ async def test_workflow():
     }
     print(f"✅ Test state created - user_input: {test_state['user_input']}")
     
-    # Execute workflow
-    print("\n3. Executing workflow...")
+    # Execute env
+    print("\n3. Executing env...")
     try:
-        result = await workflow.ainvoke(test_state)
-        print("✅ Workflow executed")
+        result = await env.ainvoke(test_state)
+        print("✅ Env executed")
     except Exception as e:
-        print(f"❌ Error executing workflow: {e}")
+        print(f"❌ Error executing env: {e}")
         import traceback
         traceback.print_exc()
         return
@@ -101,9 +101,9 @@ async def test_workflow():
         print("\n   ❌ No final response generated!")
     
     print("\n" + "=" * 60)
-    print("DEBUG TEST COMPLETE")
+    print("CHECK TEST COMPLETE")
     print("=" * 60)
 
 if __name__ == "__main__":
-    asyncio.run(test_workflow())
+    asyncio.run(test_env())
 

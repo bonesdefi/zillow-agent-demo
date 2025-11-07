@@ -2,6 +2,10 @@
 
 import logging
 from typing import Literal
+from dotenv import load_dotenv
+
+# Load .env file to ensure environment variables are available
+load_dotenv()
 
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages

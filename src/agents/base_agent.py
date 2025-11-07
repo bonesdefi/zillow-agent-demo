@@ -5,6 +5,10 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
 
 import os
+from dotenv import load_dotenv
+
+# Load .env file to ensure environment variables are available
+load_dotenv()
 
 from anthropic import AsyncAnthropic
 from pydantic import BaseModel
@@ -51,9 +55,22 @@ class BaseAgent(ABC):
         self.logger = logging.getLogger(f"agent.{name}")
 
         # Initialize Anthropic client
+        # Ensure .env is loaded (reload in case it wasn't loaded at import time)
+        load_dotenv(override=True)  # override=True ensures .env takes precedence
+        
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
-            raise ValueError("ANTHROPIC_API_KEY environment variable not set")
+            raise ValueError(
+                "ANTHROPIC_API_KEY environment variable not set. "
+                "Please create a .env file in the project root with: ANTHROPIC_API_KEY=your_key"
+            )
+        
+        # Verify key looks valid (Anthropic keys start with 'sk-ant-')
+        if not api_key.startswith("sk-ant-"):
+            self.logger.warning(
+                f"API key doesn't look like a valid Anthropic key (should start with 'sk-ant-'). "
+                f"Got: {api_key[:10]}..."
+            )
 
         self.client = AsyncAnthropic(api_key=api_key)
 

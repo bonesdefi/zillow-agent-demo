@@ -12,6 +12,10 @@ from typing import Dict, Any, List, Optional
 import os
 import sys
 import logging
+from dotenv import load_dotenv
+
+# Load .env file first before any other imports
+load_dotenv()
 
 # Add src to path for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
