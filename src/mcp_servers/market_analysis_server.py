@@ -732,6 +732,17 @@ async def get_comparable_sales(
         logger.info(f"Retrieved {len(comparable_sales)} comparable sales for: {location}")
         return comparable_sales
 
+    except httpx.HTTPStatusError as e:
+        # Handle 400 Bad Request (endpoint requires specific address, not city/state)
+        if e.response.status_code == 400:
+            logger.warning(
+                f"API returned 400 for location '{location}'. "
+                f"Endpoint requires specific address. Returning empty comparable sales."
+            )
+            # Return empty list when API doesn't support city-level queries
+            return []
+        logger.error(f"API request failed: {e}")
+        raise
     except httpx.HTTPError as e:
         logger.error(f"API request failed: {e}")
         raise
