@@ -202,45 +202,66 @@ async def search_properties(params: PropertySearchParams) -> List[Property]:
             )
 
         # Prepare API request parameters for Zillow API via RapidAPI
-        # The real-time-zillow-data API uses address-based search
-        # For location-based search, we'll use the location parameter
+        # The real-time-zillow-data API /property-details-address endpoint
+        # accepts only the 'address' parameter - it's for getting details of a specific property
+        # For search functionality, we need to use a different approach
+        
+        # First, try with just the address parameter (this endpoint expects a specific address)
         api_params = {
             "address": params.location,
         }
-
-        # Add optional filters if provided
-        if params.min_price:
-            api_params["minPrice"] = str(params.min_price)
-        if params.max_price:
-            api_params["maxPrice"] = str(params.max_price)
-        if params.bedrooms:
-            api_params["bedrooms"] = str(params.bedrooms)
-        if params.bathrooms:
-            api_params["bathrooms"] = str(params.bathrooms)
-        if params.property_type:
-            api_params["propertyType"] = params.property_type
-
-        # Call real Zillow API via RapidAPI
-        # Try property search endpoint first, fallback to property-details-address if needed
+        
         url = f"{settings.zillow_api_base_url}/property-details-address"
         logger.info(f"Calling Zillow API: {url} with params: {api_params}")
         
+        response_data = None
         try:
+            # Try the property-details-address endpoint with just the address
             response_data = await _make_api_request(url, api_params)
+            logger.info(f"API call successful, received response")
         except httpx.HTTPStatusError as e:
-            # If single property endpoint fails, try search endpoint
-            if e.response.status_code == 404:
-                logger.info("Single property endpoint returned 404, trying search endpoint")
-                # Try alternative search endpoint if available
-                search_url = f"{settings.zillow_api_base_url}/search"
-                try:
-                    response_data = await _make_api_request(search_url, api_params)
-                except Exception:
-                    # If search also fails, return empty results
-                    logger.warning(f"Search endpoint also failed, returning empty results")
+            error_status = e.response.status_code
+            error_msg = str(e)
+            
+            if error_status == 403:
+                # 403 Forbidden - API key might not have access, or endpoint doesn't support this
+                logger.warning(
+                    f"API returned 403 Forbidden. This endpoint may require: "
+                    f"1) Different API key permissions, 2) A specific property address (not ZIP/location), "
+                    f"3) A different endpoint for search functionality. "
+                    f"Returning empty results. Error: {error_msg}"
+                )
+                # Return empty results instead of crashing
+                return []
+            elif error_status == 404:
+                # Try alternative endpoints
+                logger.info("Property-details-address endpoint returned 404, trying alternative endpoints")
+                # Try search endpoint if available
+                search_urls = [
+                    f"{settings.zillow_api_base_url}/search",
+                    f"{settings.zillow_api_base_url}/property-search",
+                    f"{settings.zillow_api_base_url}/search-properties",
+                ]
+                for search_url in search_urls:
+                    try:
+                        logger.info(f"Trying alternative endpoint: {search_url}")
+                        response_data = await _make_api_request(search_url, api_params)
+                        logger.info(f"Successfully called {search_url}")
+                        break
+                    except Exception as alt_e:
+                        logger.debug(f"{search_url} failed: {alt_e}")
+                        continue
+                
+                if response_data is None:
+                    logger.warning("All search endpoints failed, returning empty results")
                     return []
             else:
-                raise
+                # For other errors, log and return empty
+                logger.error(f"API request failed with status {error_status}: {error_msg}")
+                return []
+        except Exception as e:
+            logger.error(f"Unexpected error calling Zillow API: {e}")
+            return []
 
         # Parse real API response and convert to Property objects
         properties = []
@@ -248,18 +269,31 @@ async def search_properties(params: PropertySearchParams) -> List[Property]:
         # Handle different possible response structures from Zillow API
         props_list = []
         if isinstance(response_data, dict):
-            # Try different possible keys for property list
-            props_list = (
-                response_data.get("props", [])
-                or response_data.get("results", [])
-                or response_data.get("data", [])
-                or []
-            )
+            # The /property-details-address endpoint returns a single property object
+            # Check if this is a single property response (has address, price, etc.)
+            if response_data.get("address") or response_data.get("price") or response_data.get("zpid"):
+                # Single property response - wrap it in a list
+                props_list = [response_data]
+                logger.info(f"Received single property response from API")
+            else:
+                # Try different possible keys for property list
+                props_list = (
+                    response_data.get("props", [])
+                    or response_data.get("results", [])
+                    or response_data.get("data", [])
+                    or response_data.get("properties", [])
+                    or []
+                )
+                if props_list:
+                    logger.info(f"Found {len(props_list)} properties in response list")
         elif isinstance(response_data, list):
             props_list = response_data
+            logger.info(f"Received list response with {len(props_list)} properties")
 
         if not props_list:
-            logger.warning(f"No properties found in API response: {response_data}")
+            logger.warning(f"No properties found in API response. Response type: {type(response_data)}")
+            if isinstance(response_data, dict):
+                logger.debug(f"Response keys: {list(response_data.keys())[:10]}")
             return []
 
         for prop_data in props_list[:20]:  # Limit to 20 results

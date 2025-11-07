@@ -90,7 +90,7 @@ class BaseAgent(ABC):
 
         self.client = AsyncAnthropic(api_key=api_key)
 
-        self.logger.info(f"Initialized {name} agent with model {model}")
+        self.logger.info(f"Initialized {name} agent with model {self.model}")
 
     @abstractmethod
     async def process(self, state: AgentState) -> AgentState:
