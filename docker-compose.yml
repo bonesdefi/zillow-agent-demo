@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  # MCP Servers
+  mcp-real-estate:
+    build: .
+    command: python -m src.mcp_servers.real_estate_server
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  mcp-market-analysis:
+    build: .
+    command: python -m src.mcp_servers.market_analysis_server
+    ports:
+      - "8002:8002"
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  mcp-user-context:
+    build: .
+    command: python -m src.mcp_servers.user_context_server
+    ports:
+      - "8003:8003"
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Main Application
+  app:
+    build: .
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    depends_on:
+      - mcp-real-estate
+      - mcp-market-analysis
+      - mcp-user-context
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  app-data:
+

@@ -1,0 +1,47 @@
+[project]
+name = "real-estate-ai-assistant"
+version = "0.1.0"
+description = "Multi-agent AI system for real estate assistance using LangGraph and MCP servers"
+authors = [{name = "Michael P.", email = "bonesdefi@gmail.com"}]
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "langchain>=0.1.0",
+    "langgraph>=0.0.40",
+    "anthropic>=0.18.0",
+    "fastmcp>=0.1.0",
+    "streamlit>=1.31.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.6.0",
+    "httpx>=0.26.0",
+    "pydantic-settings>=2.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "pytest-asyncio>=0.23.0",
+    "mypy>=1.8.0",
+    "ruff>=0.2.0",
+    "black>=24.0.0",
+    "bandit>=1.7.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --cov=src --cov-report=html --cov-report=term-missing"
+
