@@ -255,24 +255,80 @@ async def search_properties(params: PropertySearchParams) -> List[Property]:
         logger.info(f"Found {len(props_list)} properties in API response")
 
         # Filter properties based on search criteria (since API doesn't support all filters)
+        # Make filtering more flexible - allow some tolerance
         filtered_props = []
+        sample_props = []  # For debugging
+        
         for prop_data in props_list:
-            # Apply filters if provided
-            if params.bedrooms and prop_data.get("bedrooms") != params.bedrooms:
-                continue
-            if params.bathrooms and prop_data.get("bathrooms") and abs(prop_data.get("bathrooms") - params.bathrooms) > 0.5:
-                continue
+            # Sample first few properties for debugging
+            if len(sample_props) < 3:
+                sample_props.append({
+                    "bedrooms": prop_data.get("bedrooms"),
+                    "bathrooms": prop_data.get("bathrooms"),
+                    "homeType": prop_data.get("homeType"),
+                    "price": prop_data.get("price"),
+                })
+            
+            # Apply filters if provided - be flexible
+            # Bedrooms: allow ±1 bedroom flexibility (e.g., 3 bedrooms can match 2-4)
+            if params.bedrooms:
+                prop_bedrooms = prop_data.get("bedrooms")
+                if prop_bedrooms is None:
+                    # If bedrooms not in API response, skip this filter
+                    pass
+                elif abs(prop_bedrooms - params.bedrooms) > 1:
+                    continue
+            
+            # Bathrooms: allow ±0.5 bathroom flexibility
+            if params.bathrooms:
+                prop_bathrooms = prop_data.get("bathrooms")
+                if prop_bathrooms is None:
+                    # If bathrooms not in API response, skip this filter
+                    pass
+                elif abs(prop_bathrooms - params.bathrooms) > 0.5:
+                    continue
+            
+            # Price filters: strict
             if params.min_price and prop_data.get("price", 0) < params.min_price:
                 continue
             if params.max_price and prop_data.get("price", 0) > params.max_price:
                 continue
+            
+            # Property type: flexible matching
             if params.property_type:
-                home_type = prop_data.get("homeType", "").lower()
-                if params.property_type.lower() not in home_type:
+                home_type = prop_data.get("homeType", "").upper()
+                property_type_upper = params.property_type.upper()
+                # Map property types
+                type_mapping = {
+                    "HOUSE": ["SINGLE_FAMILY", "MULTI_FAMILY"],
+                    "CONDO": ["CONDO", "CONDOMINIUM"],
+                    "TOWNHOUSE": ["TOWNHOUSE", "TOWN_HOUSE"],
+                }
+                allowed_types = type_mapping.get(property_type_upper, [property_type_upper])
+                if home_type not in allowed_types and property_type_upper not in home_type:
                     continue
+            
             filtered_props.append(prop_data)
         
+        # Log sample properties for debugging
+        if sample_props:
+            logger.info(f"Sample properties from API: {sample_props[:2]}")
         logger.info(f"Filtered to {len(filtered_props)} properties matching criteria (from {len(props_list)} total)")
+        
+        # If no properties match filters but we have properties, return top results anyway
+        # This helps with edge cases where filters might be too strict
+        if len(filtered_props) == 0 and len(props_list) > 0:
+            logger.warning(
+                f"No properties matched exact filters. Returning top {min(10, len(props_list))} properties "
+                f"without strict filtering to show available options."
+            )
+            # Return properties with relaxed filtering - only apply price filters
+            for prop_data in props_list[:10]:
+                if params.min_price and prop_data.get("price", 0) < params.min_price:
+                    continue
+                if params.max_price and prop_data.get("price", 0) > params.max_price:
+                    continue
+                filtered_props.append(prop_data)
         
         for prop_data in filtered_props[:20]:  # Limit to 20 results
             try:
