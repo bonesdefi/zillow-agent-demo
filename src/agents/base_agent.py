@@ -65,12 +65,23 @@ class BaseAgent(ABC):
                 "Please create a .env file in the project root with: ANTHROPIC_API_KEY=your_key"
             )
         
+        # Strip whitespace (common issue with .env files)
+        api_key = api_key.strip()
+        
         # Verify key looks valid (Anthropic keys start with 'sk-ant-')
         if not api_key.startswith("sk-ant-"):
-            self.logger.warning(
+            self.logger.error(
                 f"API key doesn't look like a valid Anthropic key (should start with 'sk-ant-'). "
-                f"Got: {api_key[:10]}..."
+                f"Got: {api_key[:20]}... (length: {len(api_key)})"
             )
+            raise ValueError(
+                f"Invalid API key format. Expected key starting with 'sk-ant-', got: {api_key[:20]}..."
+            )
+        
+        # Log key info for debugging (masked)
+        self.logger.info(
+            f"Using API key: {api_key[:10]}...{api_key[-4:]} (length: {len(api_key)})"
+        )
 
         self.client = AsyncAnthropic(api_key=api_key)
 
