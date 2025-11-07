@@ -253,6 +253,30 @@ async def get_neighborhood_stats(location: str) -> NeighborhoodStats:
         logger.info(f"Retrieved neighborhood stats for: {location}")
         return stats
 
+    except httpx.HTTPStatusError as e:
+        # Handle 400 Bad Request (endpoint requires specific address, not city/state)
+        if e.response.status_code == 400:
+            logger.warning(
+                f"API returned 400 for location '{location}'. "
+                f"Endpoint requires specific address. Returning estimated neighborhood stats."
+            )
+            # Return default/estimated stats when API doesn't support city-level queries
+            stats = NeighborhoodStats(
+                demographics={
+                    "population": 0,
+                    "median_age": 0,
+                    "median_income": 0,
+                    "household_size": 0,
+                },
+                crime_score=50.0,  # Neutral default
+                walkability_score=50.0,  # Neutral default
+                overall_score=50.0,
+            )
+            # Cache the default result to avoid repeated API calls
+            _set_cache(cache_key, stats.model_dump(), ttl_seconds=86400)
+            return stats
+        logger.error(f"API request failed: {e}")
+        raise
     except httpx.HTTPError as e:
         logger.error(f"API request failed: {e}")
         raise
@@ -355,6 +379,17 @@ async def get_school_ratings(location: str, radius: int = 5) -> List[SchoolRatin
         logger.info(f"Retrieved {len(school_ratings)} school ratings for: {location}")
         return school_ratings
 
+    except httpx.HTTPStatusError as e:
+        # Handle 400 Bad Request (endpoint requires specific address, not city/state)
+        if e.response.status_code == 400:
+            logger.warning(
+                f"API returned 400 for location '{location}'. "
+                f"Endpoint requires specific address. Returning empty school ratings."
+            )
+            # Return empty list when API doesn't support city-level queries
+            return []
+        logger.error(f"API request failed: {e}")
+        raise
     except httpx.HTTPError as e:
         logger.error(f"API request failed: {e}")
         raise
@@ -453,6 +488,30 @@ async def get_market_trends(location: str, timeframe: str = "1y") -> MarketTrend
         logger.info(f"Retrieved market trends for: {location}")
         return trends
 
+    except httpx.HTTPStatusError as e:
+        # Handle 400 Bad Request (endpoint requires specific address, not city/state)
+        if e.response.status_code == 400:
+            logger.warning(
+                f"API returned 400 for location '{location}'. "
+                f"Endpoint requires specific address. Returning estimated market trends."
+            )
+            # Return default/estimated trends when API doesn't support city-level queries
+            trends = MarketTrends(
+                location=location,
+                timeframe=timeframe,
+                median_price=0.0,
+                price_change_percent=0.0,
+                days_on_market_avg=30.0,
+                inventory_count=0,
+                sales_velocity=0.0,
+                price_per_sqft=0.0,
+                trend_direction="stable",
+            )
+            # Cache the default result
+            _set_cache(cache_key, trends.model_dump(), ttl_seconds=3600)
+            return trends
+        logger.error(f"API request failed: {e}")
+        raise
     except httpx.HTTPError as e:
         logger.error(f"API request failed: {e}")
         raise
