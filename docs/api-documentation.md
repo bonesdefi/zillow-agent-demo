@@ -1,8 +1,8 @@
-# API Documentation Documentation
+# API Documentation
 
 ## Overview
 
-The system uses three custom API (Model Context Protocol) documentation to provide structured data access for the AI agents.
+The system uses three custom MCP (Model Context Protocol) servers to provide structured data access for the AI agents.
 
 ## Real Estate Data Server
 
@@ -186,7 +186,7 @@ Get viewing history.
 
 ## Error Handling
 
-All API documentation implement comprehensive error handling:
+All MCP servers implement comprehensive error handling:
 
 - **Validation Errors**: Invalid input parameters return 400 errors
 - **API Errors**: External API failures are caught and logged
