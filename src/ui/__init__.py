@@ -1,2 +1,1 @@
-"""Streamlit user interface."""
-
+"""UI components for Real Estate AI Assistant."""
