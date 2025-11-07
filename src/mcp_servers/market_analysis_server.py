@@ -325,10 +325,10 @@ async def get_school_ratings(location: str, radius: int = 5) -> List[SchoolRatin
                     or "elementary"
                 ).lower()
 
-                # Extract rating (may be 0-10 scale or 0-5 scale)
+                # Extract rating (0-10 scale expected)
                 rating = school_data.get("rating") or school_data.get("score") or 0
-                if rating > 5:
-                    rating = rating / 2  # Convert 10-point scale to 5-point if needed
+                # Keep rating as-is (0-10 scale) since SchoolRating model accepts 0-10
+                # No conversion needed
 
                 distance = school_data.get("distance") or school_data.get("distanceMiles") or 0
 
@@ -541,6 +541,9 @@ async def calculate_affordability(
     # Calculate debt-to-income ratio
     monthly_income = annual_income / 12
     dti_ratio = (monthly_payment / monthly_income) * 100 if monthly_income > 0 else 0
+    
+    # Cap DTI ratio at 100% for Pydantic validation (even if calculation exceeds it)
+    dti_ratio_capped = min(dti_ratio, 100.0)
 
     # Determine if affordable
     affordable = dti_ratio <= (MAX_DTI_RATIO * 100)
@@ -568,7 +571,7 @@ async def calculate_affordability(
         monthly_principal_interest=round(monthly_pi, 2),
         estimated_monthly_taxes=round(monthly_taxes, 2),
         estimated_monthly_insurance=round(monthly_insurance, 2),
-        debt_to_income_ratio=round(dti_ratio, 2),
+        debt_to_income_ratio=round(dti_ratio_capped, 2),
         recommendation=recommendation,
     )
 

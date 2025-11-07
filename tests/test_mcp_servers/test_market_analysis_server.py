@@ -59,6 +59,14 @@ async def test_get_neighborhood_stats_invalid_location():
 @pytest.mark.asyncio
 async def test_get_neighborhood_stats_api_failure():
     """Test handling of API failures."""
+    # Clear cache first to ensure we hit the API
+    from src.mcp_servers.market_analysis_server import _cache, _cache_ttl
+    cache_key = "neighborhood_stats|location:Test City, TX"
+    if cache_key in _cache:
+        del _cache[cache_key]
+    if cache_key in _cache_ttl:
+        del _cache_ttl[cache_key]
+    
     with patch("src.mcp_servers.market_analysis_server.settings") as mock_settings:
         mock_settings.rapidapi_key = "test_key"
         mock_settings.zillow_api_base_url = "https://test.api.com"
@@ -68,13 +76,21 @@ async def test_get_neighborhood_stats_api_failure():
             mock_api.side_effect = httpx.HTTPError("API unavailable")
 
             with pytest.raises(httpx.HTTPError):
-                await get_neighborhood_stats("Austin, TX")
+                await get_neighborhood_stats("Test City, TX")
 
 
 @pytest.mark.asyncio
 async def test_get_school_ratings_success():
     """Test successful school ratings retrieval."""
-    location = "Austin, TX"
+    # Clear cache first
+    from src.mcp_servers.market_analysis_server import _cache, _cache_ttl
+    cache_key = "school_ratings|location:Test School City, TX|radius:5"
+    if cache_key in _cache:
+        del _cache[cache_key]
+    if cache_key in _cache_ttl:
+        del _cache_ttl[cache_key]
+    
+    location = "Test School City, TX"
     radius = 5
 
     with patch("src.mcp_servers.market_analysis_server.settings") as mock_settings:
@@ -86,7 +102,7 @@ async def test_get_school_ratings_success():
             mock_api.return_value = {
                 "schools": [
                     {
-                        "name": "Austin Elementary",
+                        "name": "Test Elementary",
                         "type": "elementary",
                         "rating": 8.5,
                         "distance": 0.5,
@@ -94,7 +110,7 @@ async def test_get_school_ratings_success():
                         "grades": "K-5",
                     },
                     {
-                        "name": "Austin High",
+                        "name": "Test High",
                         "type": "high",
                         "rating": 9.0,
                         "distance": 1.2,
@@ -105,10 +121,14 @@ async def test_get_school_ratings_success():
             result = await get_school_ratings(location, radius)
 
             assert isinstance(result, list)
-            assert len(result) > 0
+            assert len(result) == 2  # Should have 2 schools
             assert all(isinstance(s, SchoolRating) for s in result)
-            assert result[0].name == "Austin Elementary"
-            assert result[0].rating == 8.5
+            # Schools are sorted by rating (highest first), so Test High (9.0) comes first
+            assert result[0].name == "Test High"
+            assert result[0].rating == 9.0
+            # Test Elementary (8.5) should be second
+            assert result[1].name == "Test Elementary"
+            assert result[1].rating == 8.5  # Should remain 8.5, not be converted
 
 
 @pytest.mark.asyncio
@@ -162,9 +182,10 @@ async def test_get_market_trends_invalid_timeframe():
 @pytest.mark.asyncio
 async def test_calculate_affordability_affordable():
     """Test affordability calculation for affordable property."""
-    price = 500000
-    annual_income = 120000
-    down_payment = 100000
+    # Use parameters that will actually be affordable (DTI < 28%)
+    price = 400000
+    annual_income = 150000
+    down_payment = 80000  # 20% down
 
     result = await calculate_affordability(price, annual_income, down_payment)
 
@@ -174,8 +195,9 @@ async def test_calculate_affordability_affordable():
     assert result.down_payment == down_payment
     assert result.loan_amount == price - down_payment
     assert result.debt_to_income_ratio > 0
-    assert result.debt_to_income_ratio <= 100
-    assert "recommendation" in result.recommendation.lower()
+    assert result.debt_to_income_ratio <= 28  # Should be affordable (<= 28%)
+    assert len(result.recommendation) > 0  # Recommendation should have content
+    assert "affordable" in result.recommendation.lower()  # Should mention affordability
 
 
 @pytest.mark.asyncio

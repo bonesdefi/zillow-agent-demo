@@ -336,11 +336,17 @@ async def search_properties(params: PropertySearchParams) -> List[Property]:
                 if listing_url and not listing_url.startswith("http"):
                     listing_url = f"https://www.zillow.com{listing_url}"
 
+                # Build Property object with all required fields
+                property_id = str(prop_data.get("zpid") or prop_data.get("id") or f"prop_{len(properties)}")
+                property_address = street_address or "Address not available"
+                property_city = city or (params.location.split(",")[0].strip() if "," in params.location else "")
+                property_state = state or (params.location.split(",")[1].strip() if "," in params.location else "TX")
+                
                 property_obj = Property(
-                    id=str(prop_data.get("zpid") or prop_data.get("id") or f"prop_{len(properties)}")),
-                    address=street_address or "Address not available",
-                    city=city or params.location.split(",")[0].strip() if "," in params.location else "",
-                    state=state or params.location.split(",")[1].strip() if "," in params.location else "TX",
+                    id=property_id,
+                    address=property_address,
+                    city=property_city,
+                    state=property_state,
                     zip_code=zip_code,
                     price=price,
                     bedrooms=int(prop_data.get("bedrooms") or prop_data.get("beds") or 0),

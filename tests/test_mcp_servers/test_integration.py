@@ -19,6 +19,7 @@ from src.mcp_servers.user_context_server import (
     store_user_preferences,
     get_user_preferences,
     add_conversation_message,
+    get_conversation_history,
     track_viewed_property,
     get_viewed_properties,
 )

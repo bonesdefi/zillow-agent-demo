@@ -10,7 +10,7 @@ from datetime import datetime
 from collections import defaultdict
 
 from fastmcp import FastMCP
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from src.utils.config import get_settings
 from src.utils.logging import setup_logging
@@ -34,6 +34,8 @@ _viewed_properties: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
 # Pydantic Models
 class UserPreferences(BaseModel):
     """User preferences data model."""
+    
+    model_config = ConfigDict(extra="forbid")  # Reject unknown fields
 
     location: Optional[str] = None
     min_price: Optional[int] = None
