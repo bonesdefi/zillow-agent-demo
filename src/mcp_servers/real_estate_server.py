@@ -202,196 +202,150 @@ async def search_properties(params: PropertySearchParams) -> List[Property]:
             )
 
         # Prepare API request parameters for Zillow API via RapidAPI
-        # The real-time-zillow-data API /property-details-address endpoint
-        # accepts only the 'address' parameter - it's for getting details of a specific property
-        # For search functionality, we need to use a different approach
-        
-        # First, try with just the address parameter (this endpoint expects a specific address)
+        # Use the /search endpoint which supports location-based search
         api_params = {
-            "address": params.location,
+            "location": params.location,
+            "home_status": "FOR_SALE",
+            "sort": "DEFAULT",
+            "listing_type": "BY_AGENT",
+            "page": "1",
         }
         
-        url = f"{settings.zillow_api_base_url}/property-details-address"
+        # Add optional filters if provided
+        # Note: The API may support additional filters - check documentation
+        # For now, we'll filter results after receiving them
+        
+        url = f"{settings.zillow_api_base_url}/search"
         logger.info(f"Calling Zillow API: {url} with params: {api_params}")
         
         response_data = None
         try:
-            # Try the property-details-address endpoint with just the address
             response_data = await _make_api_request(url, api_params)
             logger.info(f"API call successful, received response")
         except httpx.HTTPStatusError as e:
             error_status = e.response.status_code
             error_msg = str(e)
-            
-            if error_status == 403:
-                # 403 Forbidden - API key might not have access, or endpoint doesn't support this
-                logger.warning(
-                    f"API returned 403 Forbidden. This endpoint may require: "
-                    f"1) Different API key permissions, 2) A specific property address (not ZIP/location), "
-                    f"3) A different endpoint for search functionality. "
-                    f"Returning empty results. Error: {error_msg}"
-                )
-                # Return empty results instead of crashing
-                return []
-            elif error_status == 404:
-                # Try alternative endpoints
-                logger.info("Property-details-address endpoint returned 404, trying alternative endpoints")
-                # Try search endpoint if available
-                search_urls = [
-                    f"{settings.zillow_api_base_url}/search",
-                    f"{settings.zillow_api_base_url}/property-search",
-                    f"{settings.zillow_api_base_url}/search-properties",
-                ]
-                for search_url in search_urls:
-                    try:
-                        logger.info(f"Trying alternative endpoint: {search_url}")
-                        response_data = await _make_api_request(search_url, api_params)
-                        logger.info(f"Successfully called {search_url}")
-                        break
-                    except Exception as alt_e:
-                        logger.debug(f"{search_url} failed: {alt_e}")
-                        continue
-                
-                if response_data is None:
-                    logger.warning("All search endpoints failed, returning empty results")
-                    return []
-            else:
-                # For other errors, log and return empty
-                logger.error(f"API request failed with status {error_status}: {error_msg}")
-                return []
+            logger.error(f"API request failed with status {error_status}: {error_msg}")
+            return []
         except Exception as e:
             logger.error(f"Unexpected error calling Zillow API: {e}")
             return []
 
         # Parse real API response and convert to Property objects
+        # The /search endpoint returns: {status: "OK", data: [...], ...}
         properties = []
         
-        # Handle different possible response structures from Zillow API
-        props_list = []
-        if isinstance(response_data, dict):
-            # The /property-details-address endpoint returns a single property object
-            # Check if this is a single property response (has address, price, etc.)
-            if response_data.get("address") or response_data.get("price") or response_data.get("zpid"):
-                # Single property response - wrap it in a list
-                props_list = [response_data]
-                logger.info(f"Received single property response from API")
-            else:
-                # Try different possible keys for property list
-                props_list = (
-                    response_data.get("props", [])
-                    or response_data.get("results", [])
-                    or response_data.get("data", [])
-                    or response_data.get("properties", [])
-                    or []
-                )
-                if props_list:
-                    logger.info(f"Found {len(props_list)} properties in response list")
-        elif isinstance(response_data, list):
-            props_list = response_data
-            logger.info(f"Received list response with {len(props_list)} properties")
-
-        if not props_list:
-            logger.warning(f"No properties found in API response. Response type: {type(response_data)}")
-            if isinstance(response_data, dict):
-                logger.debug(f"Response keys: {list(response_data.keys())[:10]}")
+        if not isinstance(response_data, dict):
+            logger.warning(f"Unexpected response type: {type(response_data)}")
             return []
+        
+        # Check response status
+        status = response_data.get("status", "")
+        if status != "OK":
+            logger.warning(f"API returned non-OK status: {status}")
+            # Continue anyway in case data is still present
+        
+        # Extract properties from data array
+        props_list = response_data.get("data", [])
+        if not props_list:
+            logger.warning(f"No properties found in API response data array")
+            logger.debug(f"Response keys: {list(response_data.keys())}")
+            return []
+        
+        logger.info(f"Found {len(props_list)} properties in API response")
 
-        for prop_data in props_list[:20]:  # Limit to 20 results
+        # Filter properties based on search criteria (since API doesn't support all filters)
+        filtered_props = []
+        for prop_data in props_list:
+            # Apply filters if provided
+            if params.bedrooms and prop_data.get("bedrooms") != params.bedrooms:
+                continue
+            if params.bathrooms and prop_data.get("bathrooms") and abs(prop_data.get("bathrooms") - params.bathrooms) > 0.5:
+                continue
+            if params.min_price and prop_data.get("price", 0) < params.min_price:
+                continue
+            if params.max_price and prop_data.get("price", 0) > params.max_price:
+                continue
+            if params.property_type:
+                home_type = prop_data.get("homeType", "").lower()
+                if params.property_type.lower() not in home_type:
+                    continue
+            filtered_props.append(prop_data)
+        
+        logger.info(f"Filtered to {len(filtered_props)} properties matching criteria (from {len(props_list)} total)")
+        
+        for prop_data in filtered_props[:20]:  # Limit to 20 results
             try:
-                # Handle nested address structure
-                address_data = prop_data.get("address", {})
-                if isinstance(address_data, str):
-                    # If address is a string, try to parse it
-                    address_parts = address_data.split(",")
-                    street_address = address_parts[0].strip() if address_parts else ""
-                    city = address_parts[1].strip() if len(address_parts) > 1 else ""
-                    state = address_parts[2].strip() if len(address_parts) > 2 else ""
-                    zip_code = ""
-                else:
-                    street_address = address_data.get("streetAddress") or address_data.get("street", "") or ""
-                    city = address_data.get("city") or ""
-                    state = address_data.get("state") or ""
-                    zip_code = str(address_data.get("zipcode") or address_data.get("zipCode") or "")
+                # Parse address - API returns address as string and also has separate fields
+                address_str = prop_data.get("address", "")
+                street_address = prop_data.get("streetAddress", "")
+                city = prop_data.get("city", "")
+                state = prop_data.get("state", "")
+                zip_code = str(prop_data.get("zipcode", ""))
+                
+                # If address string exists but separate fields don't, parse from string
+                if address_str and not street_address:
+                    address_parts = address_str.split(",")
+                    if len(address_parts) > 0:
+                        street_address = address_parts[0].strip()
+                    if len(address_parts) > 1:
+                        city = address_parts[1].strip()
+                    if len(address_parts) > 2:
+                        state_zip = address_parts[2].strip().split()
+                        if len(state_zip) > 0:
+                            state = state_zip[0]
+                        if len(state_zip) > 1:
+                            zip_code = state_zip[1]
 
-                # Extract price - handle different formats
-                price = 0
-                price_value = prop_data.get("price") or prop_data.get("listPrice") or prop_data.get("unformattedPrice")
-                if price_value:
-                    if isinstance(price_value, (int, float)):
-                        price = int(price_value)
-                    elif isinstance(price_value, str):
-                        # Remove currency symbols and commas
-                        price_str = price_value.replace("$", "").replace(",", "").strip()
-                        try:
-                            price = int(float(price_str))
-                        except ValueError:
-                            logger.warning(f"Could not parse price: {price_value}")
+                # Extract price - API returns as number
+                price = int(prop_data.get("price", 0))
+                
+                # Extract square feet - API uses livingArea
+                square_feet = int(prop_data.get("livingArea", 0))
+                
+                # Extract property type - API uses homeType
+                home_type = prop_data.get("homeType", "SINGLE_FAMILY")
+                # Map to our property types
+                property_type_map = {
+                    "SINGLE_FAMILY": "house",
+                    "CONDO": "condo",
+                    "TOWNHOUSE": "townhouse",
+                    "MULTI_FAMILY": "house",
+                }
+                property_type = property_type_map.get(home_type, "house")
 
-                # Extract square feet
-                square_feet = (
-                    prop_data.get("livingArea")
-                    or prop_data.get("sqft")
-                    or prop_data.get("squareFeet")
-                    or prop_data.get("area")
-                    or 0
-                )
-                if isinstance(square_feet, str):
-                    try:
-                        square_feet = int(float(square_feet.replace(",", "")))
-                    except ValueError:
-                        square_feet = 0
+                # Extract image URL - API uses imgSrc
+                image_url = prop_data.get("imgSrc", "") or ""
+                
+                # Extract bedrooms and bathrooms
+                bedrooms = int(prop_data.get("bedrooms", 0))
+                bathrooms = float(prop_data.get("bathrooms", 0))
 
-                # Extract property type
-                property_type = (
-                    prop_data.get("propertyType")
-                    or prop_data.get("type")
-                    or prop_data.get("homeType")
-                    or "house"
-                ).lower()
-
-                # Extract image URL
-                image_url = (
-                    prop_data.get("imgSrc")
-                    or prop_data.get("imageUrl")
-                    or prop_data.get("photo")
-                    or prop_data.get("photos", [{}])[0].get("url", "")
-                    if isinstance(prop_data.get("photos"), list) and prop_data.get("photos")
-                    else ""
-                )
-
-                # Extract listing URL
-                listing_url = (
-                    prop_data.get("hdpUrl")
-                    or prop_data.get("url")
-                    or prop_data.get("detailUrl")
-                    or prop_data.get("zillowUrl")
-                    or ""
-                )
-                if listing_url and not listing_url.startswith("http"):
-                    listing_url = f"https://www.zillow.com{listing_url}"
+                # Extract listing URL - API uses detailUrl
+                detail_url = prop_data.get("detailUrl", "")
+                listing_url = detail_url or ""
 
                 # Build Property object with all required fields
-                property_id = str(prop_data.get("zpid") or prop_data.get("id") or f"prop_{len(properties)}")
-                property_address = street_address or "Address not available"
-                property_city = city or (params.location.split(",")[0].strip() if "," in params.location else "")
-                property_state = state or (params.location.split(",")[1].strip() if "," in params.location else "TX")
+                property_id = str(prop_data.get("zpid", "")) or f"prop_{len(properties)}"
+                
+                # Build full address
+                address_parts = [p for p in [street_address, city, state, zip_code] if p]
+                property_address = ", ".join(address_parts) if address_parts else address_str or "Address not available"
                 
                 property_obj = Property(
                     id=property_id,
                     address=property_address,
-                    city=property_city,
-                    state=property_state,
+                    city=city or "",
+                    state=state or "",
                     zip_code=zip_code,
                     price=price,
-                    bedrooms=int(prop_data.get("bedrooms") or prop_data.get("beds") or 0),
-                    bathrooms=float(prop_data.get("bathrooms") or prop_data.get("baths") or 0),
-                    square_feet=int(square_feet),
+                    bedrooms=bedrooms,
+                    bathrooms=bathrooms,
+                    square_feet=square_feet,
                     property_type=property_type,
                     listing_url=listing_url,
                     description=prop_data.get("description") or prop_data.get("statusText") or "",
                     image_url=image_url,
-                    year_built=prop_data.get("yearBuilt"),
-                    lot_size=prop_data.get("lotSize") or prop_data.get("lotSizeValue"),
                 )
                 properties.append(property_obj)
                 logger.debug(f"Parsed property: {property_obj.id} - {property_obj.address}")
