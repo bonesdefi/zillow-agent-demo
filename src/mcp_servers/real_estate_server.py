@@ -326,7 +326,8 @@ async def search_properties(params: PropertySearchParams) -> List[Property]:
                 listing_url = detail_url or ""
 
                 # Build Property object with all required fields
-                property_id = str(prop_data.get("zpid", "")) or f"prop_{len(properties)}"
+                zpid = prop_data.get("zpid")
+                property_id = str(zpid) if zpid else f"prop_{len(properties)}"
                 
                 # Build full address
                 address_parts = [p for p in [street_address, city, state, zip_code] if p]
