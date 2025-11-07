@@ -8,7 +8,8 @@ import logging
 from dotenv import load_dotenv
 
 # Load .env file FIRST - this will load all environment variables
-load_dotenv()
+# Use override=True to ensure .env values take precedence over existing env vars
+load_dotenv(override=True)
 
 # Add src to path
 sys.path.insert(0, os.path.abspath('.'))
@@ -22,7 +23,11 @@ logging.basicConfig(
 # Verify API key is loaded
 api_key = os.getenv("ANTHROPIC_API_KEY")
 if api_key:
-    print(f"✅ API key loaded: {api_key[:10]}...{api_key[-4:] if len(api_key) > 14 else ''}")
+    if api_key == "test_key" or len(api_key) < 20:
+        print(f"❌ WARNING: API key looks invalid: {api_key[:20]}...")
+        print("   This might be a placeholder. Check your .env file.")
+    else:
+        print(f"✅ API key loaded: {api_key[:10]}...{api_key[-4:] if len(api_key) > 14 else ''} (length: {len(api_key)})")
 else:
     print("❌ WARNING: ANTHROPIC_API_KEY not found in environment!")
     print("   Make sure you have a .env file with ANTHROPIC_API_KEY set")

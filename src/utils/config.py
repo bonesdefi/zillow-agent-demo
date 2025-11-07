@@ -7,7 +7,8 @@ from functools import lru_cache
 from dotenv import load_dotenv
 
 # Load .env file at module import
-load_dotenv()
+# Use override=True to ensure .env values take precedence
+load_dotenv(override=True)
 
 
 class Settings(BaseSettings):
