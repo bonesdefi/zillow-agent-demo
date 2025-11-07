@@ -92,7 +92,7 @@ The workflow is defined as a state machine with the following nodes:
 - **LangGraph**: Provides state machine orchestration for multi-agent systems
 - **FastMCP**: Modern Python framework for MCP server implementation
 - **Anthropic Claude**: High-quality reasoning for agent decision-making
-- **Streamlit**: Rapid UI development for demos
+- **Streamlit**: Modern web UI framework for real-time applications
 - **Pydantic**: Type-safe data validation
 - **pytest**: Comprehensive testing framework
 

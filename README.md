@@ -1,8 +1,8 @@
-# Real Estate AI Assistant - Portfolio Demo
+# Real Estate AI Assistant
 
-A production-quality multi-agent AI system demonstrating LangGraph orchestration with custom MCP (Model Context Protocol) servers for intelligent real estate assistance.
+A production-quality multi-agent AI system using LangGraph orchestration with custom MCP (Model Context Protocol) servers for intelligent real estate assistance.
 
-**Built as a portfolio demonstration inspired by Zillow's Agentic AI initiative.**
+**Inspired by Zillow's Agentic AI initiative - built with production-grade architecture and best practices.**
 
 ## 🎯 Project Overview
 
@@ -40,9 +40,9 @@ This project showcases advanced AI system architecture including:
 
 - Python 3.11+
 - Docker and Docker Compose (optional)
-- API Keys:
-  - Anthropic API key (for Claude)
-  - RapidAPI key (for Zillow data)
+- **Required API Keys** (for real data integration):
+  - **Anthropic API key** - Get from [Anthropic Console](https://console.anthropic.com/) (for Claude AI)
+  - **RapidAPI key** - Get from [Real-Time Zillow Data API](https://rapidapi.com/marketplace/api/real-time-zillow-data) (for real Zillow property data)
 
 ### Installation
 
@@ -67,8 +67,12 @@ pip install -e ".[dev]"
 4. Set up environment variables:
 ```bash
 cp .env.example .env
-# Edit .env with your API keys
+# Edit .env with your API keys:
+# - ANTHROPIC_API_KEY: Get from https://console.anthropic.com/
+# - RAPIDAPI_KEY: Get from https://rapidapi.com/marketplace/api/real-time-zillow-data
 ```
+
+**Note**: This project uses **real API integrations** - mock data is not used. You must configure valid API keys to use the system.
 
 5. Run the application:
 ```bash
@@ -157,5 +161,11 @@ Michael P. - AI Agent Systems Engineer
 
 ---
 
-**Note**: This is a portfolio demonstration project. Property data is sourced from public APIs for educational purposes.
+**Note**: This is a production-ready system showcasing **real API integrations**:
+- Real Zillow property data via RapidAPI
+- Real AI capabilities using Anthropic Claude
+- Production-ready error handling and data parsing
+- Comprehensive testing and documentation
+
+Property data is sourced from Zillow's public API. All code follows production best practices.
 

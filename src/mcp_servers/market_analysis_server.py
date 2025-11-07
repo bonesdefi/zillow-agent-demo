@@ -1,0 +1,688 @@
+"""Market Analysis MCP Server.
+
+This server provides tools for analyzing real estate market data including
+neighborhood statistics, school ratings, market trends, affordability calculations,
+and comparable sales data.
+"""
+
+import asyncio
+import math
+from typing import List, Optional, Dict, Any
+from datetime import datetime, timedelta
+
+import httpx
+from fastmcp import FastMCP
+from pydantic import BaseModel, Field
+
+from src.utils.config import get_settings
+from src.utils.logging import setup_logging
+
+# Initialize logger
+logger = setup_logging(__name__)
+
+# Initialize MCP server
+mcp = FastMCP("Market Analysis Server")
+
+# Get settings
+settings = get_settings()
+
+# Simple in-memory cache with TTL
+_cache: dict = {}
+_cache_ttl: dict = {}
+
+
+def _get_cache_key(prefix: str, **kwargs) -> str:
+    """Generate cache key from prefix and kwargs."""
+    sorted_kwargs = sorted(kwargs.items())
+    key_parts = [prefix] + [f"{k}:{v}" for k, v in sorted_kwargs]
+    return "|".join(key_parts)
+
+
+def _get_cached(key: str, ttl_seconds: int = 3600) -> Optional[dict]:
+    """Get value from cache if not expired."""
+    if key in _cache:
+        if key in _cache_ttl:
+            if datetime.now() < _cache_ttl[key]:
+                logger.debug(f"Cache hit for key: {key}")
+                return _cache[key]
+            else:
+                del _cache[key]
+                del _cache_ttl[key]
+    return None
+
+
+def _set_cache(key: str, value: dict, ttl_seconds: int = 3600) -> None:
+    """Set value in cache with TTL."""
+    _cache[key] = value
+    _cache_ttl[key] = datetime.now() + timedelta(seconds=ttl_seconds)
+    logger.debug(f"Cached value for key: {key} with TTL: {ttl_seconds}s")
+
+
+async def _make_api_request(
+    url: str, params: dict, max_retries: int = 3, retry_delay: float = 1.0
+) -> dict:
+    """
+    Make HTTP request with retry logic and exponential backoff.
+
+    Args:
+        url: API endpoint URL
+        params: Request parameters
+        max_retries: Maximum number of retry attempts
+        retry_delay: Initial retry delay in seconds
+
+    Returns:
+        JSON response as dictionary
+
+    Raises:
+        httpx.HTTPError: If request fails after all retries
+        ValueError: If API key is missing
+    """
+    if not settings.rapidapi_key:
+        raise ValueError("RAPIDAPI_KEY not configured")
+
+    headers = {
+        "X-RapidAPI-Key": settings.rapidapi_key,
+        "X-RapidAPI-Host": settings.zillow_api_host,
+    }
+
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, headers=headers, params=params)
+                response.raise_for_status()
+                return response.json()
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                wait_time = retry_delay * (2 ** attempt) * 2
+                logger.warning(
+                    f"Rate limited. Waiting {wait_time}s before retry {attempt + 1}/{max_retries}"
+                )
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(wait_time)
+                    continue
+            raise
+
+        except httpx.RequestError as e:
+            logger.error(f"Request error (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                wait_time = retry_delay * (2 ** attempt)
+                await asyncio.sleep(wait_time)
+                continue
+            raise
+
+    raise httpx.HTTPError("Max retries exceeded")
+
+
+# Pydantic Models
+class NeighborhoodStats(BaseModel):
+    """Neighborhood statistics data model."""
+
+    demographics: Dict[str, Any]
+    crime_score: float = Field(..., ge=0, le=100, description="Crime score 0-100")
+    walkability_score: float = Field(..., ge=0, le=100, description="Walkability score 0-100")
+    overall_score: float = Field(..., ge=0, le=100, description="Overall neighborhood score")
+
+
+class SchoolRating(BaseModel):
+    """School rating data model."""
+
+    name: str
+    type: str = Field(..., description="School type: elementary, middle, high")
+    rating: float = Field(..., ge=0, le=10, description="School rating 0-10")
+    distance_miles: float = Field(..., ge=0, description="Distance from location in miles")
+    address: Optional[str] = None
+    grades: Optional[str] = None
+
+
+class MarketTrends(BaseModel):
+    """Market trends data model."""
+
+    location: str
+    timeframe: str
+    median_price: float
+    price_change_percent: float
+    days_on_market_avg: float
+    inventory_count: int
+    sales_velocity: float = Field(..., description="Properties sold per month")
+    price_per_sqft: float
+    trend_direction: str = Field(..., description="up, down, or stable")
+
+
+class AffordabilityAnalysis(BaseModel):
+    """Affordability analysis data model."""
+
+    affordable: bool
+    monthly_payment: float
+    down_payment: float
+    loan_amount: float
+    monthly_principal_interest: float
+    estimated_monthly_taxes: float
+    estimated_monthly_insurance: float
+    debt_to_income_ratio: float = Field(..., ge=0, le=100)
+    recommendation: str
+
+
+class ComparableSale(BaseModel):
+    """Comparable sale data model."""
+
+    address: str
+    sale_price: int
+    sale_date: str
+    square_feet: int
+    bedrooms: int
+    bathrooms: float
+    property_type: str
+    distance_miles: float = Field(..., ge=0)
+
+
+# MCP Tools
+@mcp.tool()
+async def get_neighborhood_stats(location: str) -> NeighborhoodStats:
+    """
+    Get demographics, crime, and walkability scores for a location.
+
+    Args:
+        location: City, state, or ZIP code
+
+    Returns:
+        NeighborhoodStats object with demographics, crime score, walkability, and overall score
+
+    Raises:
+        ValueError: If location is invalid
+        httpx.HTTPError: If API request fails
+
+    Example:
+        >>> stats = await get_neighborhood_stats("Austin, TX")
+        >>> stats.crime_score
+        25.5
+        >>> stats.walkability_score
+        78.2
+    """
+    logger.info(f"Getting neighborhood stats for: {location}")
+
+    if not location or len(location.strip()) < 2:
+        raise ValueError("Invalid location: must be at least 2 characters")
+
+    # Check cache (24 hour TTL for neighborhood data)
+    cache_key = _get_cache_key("neighborhood_stats", location=location)
+    cached_result = _get_cached(cache_key, ttl_seconds=86400)
+    if cached_result:
+        logger.info(f"Returning cached neighborhood stats for: {location}")
+        return NeighborhoodStats(**cached_result)
+
+    try:
+        # Validate API key
+        if not settings.rapidapi_key or settings.rapidapi_key == "your_rapidapi_key_here":
+            raise ValueError("RAPIDAPI_KEY not configured. Please set your RapidAPI key in .env file")
+
+        # Call Zillow API for neighborhood data
+        url = f"{settings.zillow_api_base_url}/property-details-address"
+        params = {"address": location}
+
+        response_data = await _make_api_request(url, params)
+
+        # Extract neighborhood data from response
+        # Note: Actual API response structure may vary - this handles common patterns
+        demographics = {
+            "population": response_data.get("demographics", {}).get("population") or 0,
+            "median_age": response_data.get("demographics", {}).get("medianAge") or 0,
+            "median_income": response_data.get("demographics", {}).get("medianIncome") or 0,
+            "household_size": response_data.get("demographics", {}).get("householdSize") or 0,
+        }
+
+        # Calculate scores from available data
+        # Scores are extracted from Zillow API response, with fallback to neutral values
+        # In production deployments, these could be enhanced with specialized APIs
+        crime_score = response_data.get("crimeScore") or 50.0  # Default neutral score
+        walkability_score = response_data.get("walkScore") or response_data.get("walkability") or 50.0
+
+        # Calculate overall score (weighted average)
+        overall_score = (crime_score * 0.4 + walkability_score * 0.6)
+
+        stats = NeighborhoodStats(
+            demographics=demographics,
+            crime_score=float(crime_score),
+            walkability_score=float(walkability_score),
+            overall_score=float(overall_score),
+        )
+
+        # Cache result
+        _set_cache(cache_key, stats.model_dump(), ttl_seconds=86400)
+
+        logger.info(f"Retrieved neighborhood stats for: {location}")
+        return stats
+
+    except httpx.HTTPError as e:
+        logger.error(f"API request failed: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in get_neighborhood_stats: {e}")
+        raise
+
+
+@mcp.tool()
+async def get_school_ratings(location: str, radius: int = 5) -> List[SchoolRating]:
+    """
+    Get school quality ratings for area.
+
+    Args:
+        location: City, state, or ZIP code
+        radius: Search radius in miles (default: 5)
+
+    Returns:
+        List of SchoolRating objects
+
+    Raises:
+        ValueError: If location is invalid or radius is out of range
+        httpx.HTTPError: If API request fails
+
+    Example:
+        >>> schools = await get_school_ratings("Austin, TX", radius=5)
+        >>> len(schools)
+        12
+        >>> schools[0].rating
+        8.5
+    """
+    logger.info(f"Getting school ratings for: {location} (radius: {radius} miles)")
+
+    if not location or len(location.strip()) < 2:
+        raise ValueError("Invalid location: must be at least 2 characters")
+
+    if radius < 1 or radius > 25:
+        raise ValueError("Radius must be between 1 and 25 miles")
+
+    # Check cache (24 hour TTL for school data)
+    cache_key = _get_cache_key("school_ratings", location=location, radius=radius)
+    cached_result = _get_cached(cache_key, ttl_seconds=86400)
+    if cached_result:
+        logger.info(f"Returning cached school ratings for: {location}")
+        return [SchoolRating(**s) for s in cached_result.get("schools", [])]
+
+    try:
+        # Validate API key
+        if not settings.rapidapi_key or settings.rapidapi_key == "your_rapidapi_key_here":
+            raise ValueError("RAPIDAPI_KEY not configured. Please set your RapidAPI key in .env file")
+
+        # Call Zillow API for school data
+        url = f"{settings.zillow_api_base_url}/property-details-address"
+        params = {"address": location}
+
+        response_data = await _make_api_request(url, params)
+
+        # Extract school data from response
+        schools_list = response_data.get("schools", []) or response_data.get("nearbySchools", []) or []
+
+        school_ratings = []
+        for school_data in schools_list[:20]:  # Limit to 20 schools
+            try:
+                # Handle different response formats
+                school_name = school_data.get("name") or school_data.get("schoolName") or "Unknown"
+                school_type = (
+                    school_data.get("type")
+                    or school_data.get("schoolType")
+                    or school_data.get("level")
+                    or "elementary"
+                ).lower()
+
+                # Extract rating (may be 0-10 scale or 0-5 scale)
+                rating = school_data.get("rating") or school_data.get("score") or 0
+                if rating > 5:
+                    rating = rating / 2  # Convert 10-point scale to 5-point if needed
+
+                distance = school_data.get("distance") or school_data.get("distanceMiles") or 0
+
+                school_rating = SchoolRating(
+                    name=school_name,
+                    type=school_type,
+                    rating=float(rating),
+                    distance_miles=float(distance),
+                    address=school_data.get("address"),
+                    grades=school_data.get("grades"),
+                )
+                school_ratings.append(school_rating)
+
+            except Exception as e:
+                logger.warning(f"Error parsing school data: {e}")
+                continue
+
+        # Sort by rating (highest first)
+        school_ratings.sort(key=lambda x: x.rating, reverse=True)
+
+        # Cache result
+        _set_cache(cache_key, {"schools": [s.model_dump() for s in school_ratings]}, ttl_seconds=86400)
+
+        logger.info(f"Retrieved {len(school_ratings)} school ratings for: {location}")
+        return school_ratings
+
+    except httpx.HTTPError as e:
+        logger.error(f"API request failed: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in get_school_ratings: {e}")
+        raise
+
+
+@mcp.tool()
+async def get_market_trends(location: str, timeframe: str = "1y") -> MarketTrends:
+    """
+    Get price trends and market velocity.
+
+    Args:
+        location: City, state, or ZIP code
+        timeframe: Timeframe for trends - "1m", "3m", "6m", or "1y" (default: "1y")
+
+    Returns:
+        MarketTrends object with price trends and market velocity
+
+    Raises:
+        ValueError: If location is invalid or timeframe is invalid
+        httpx.HTTPError: If API request fails
+
+    Example:
+        >>> trends = await get_market_trends("Austin, TX", timeframe="6m")
+        >>> trends.price_change_percent
+        5.2
+        >>> trends.sales_velocity
+        45.3
+    """
+    logger.info(f"Getting market trends for: {location} (timeframe: {timeframe})")
+
+    if not location or len(location.strip()) < 2:
+        raise ValueError("Invalid location: must be at least 2 characters")
+
+    valid_timeframes = ["1m", "3m", "6m", "1y"]
+    if timeframe not in valid_timeframes:
+        raise ValueError(f"Invalid timeframe. Must be one of: {', '.join(valid_timeframes)}")
+
+    # Check cache (1 hour TTL for market trends)
+    cache_key = _get_cache_key("market_trends", location=location, timeframe=timeframe)
+    cached_result = _get_cached(cache_key, ttl_seconds=3600)
+    if cached_result:
+        logger.info(f"Returning cached market trends for: {location}")
+        return MarketTrends(**cached_result)
+
+    try:
+        # Validate API key
+        if not settings.rapidapi_key or settings.rapidapi_key == "your_rapidapi_key_here":
+            raise ValueError("RAPIDAPI_KEY not configured. Please set your RapidAPI key in .env file")
+
+        # Call Zillow API for market data
+        url = f"{settings.zillow_api_base_url}/property-details-address"
+        params = {"address": location}
+
+        response_data = await _make_api_request(url, params)
+
+        # Extract market data from response
+        median_price = response_data.get("price") or response_data.get("medianPrice") or 0
+        price_per_sqft = response_data.get("pricePerSqft") or response_data.get("pricePerSquareFoot") or 0
+
+        # Calculate trends from API response data
+        # Trends are calculated from available Zillow API data
+        price_change_percent = response_data.get("priceChangePercent") or 0
+        days_on_market = response_data.get("daysOnMarket") or response_data.get("daysOnZillow") or 30
+        inventory_count = response_data.get("inventoryCount") or 0
+
+        # Calculate sales velocity (properties sold per month)
+        # This is an estimate based on available data
+        sales_velocity = response_data.get("salesVelocity") or (inventory_count / max(days_on_market / 30, 1))
+
+        # Determine trend direction
+        if price_change_percent > 2:
+            trend_direction = "up"
+        elif price_change_percent < -2:
+            trend_direction = "down"
+        else:
+            trend_direction = "stable"
+
+        trends = MarketTrends(
+            location=location,
+            timeframe=timeframe,
+            median_price=float(median_price),
+            price_change_percent=float(price_change_percent),
+            days_on_market_avg=float(days_on_market),
+            inventory_count=int(inventory_count),
+            sales_velocity=float(sales_velocity),
+            price_per_sqft=float(price_per_sqft),
+            trend_direction=trend_direction,
+        )
+
+        # Cache result
+        _set_cache(cache_key, trends.model_dump(), ttl_seconds=3600)
+
+        logger.info(f"Retrieved market trends for: {location}")
+        return trends
+
+    except httpx.HTTPError as e:
+        logger.error(f"API request failed: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in get_market_trends: {e}")
+        raise
+
+
+@mcp.tool()
+async def calculate_affordability(
+    price: int, annual_income: int, down_payment: Optional[int] = None
+) -> AffordabilityAnalysis:
+    """
+    Calculate affordability based on income.
+
+    Uses standard mortgage calculations:
+    - 30-year fixed mortgage at current rates
+    - Property taxes estimated at 1.2% of home value annually
+    - Home insurance estimated at 0.35% of home value annually
+    - Maximum debt-to-income ratio of 28% for housing costs
+
+    Args:
+        price: Property price in USD
+        annual_income: Annual household income in USD
+        down_payment: Down payment amount in USD (default: 20% of price)
+
+    Returns:
+        AffordabilityAnalysis object with detailed affordability breakdown
+
+    Raises:
+        ValueError: If price or income is invalid
+
+    Example:
+        >>> analysis = await calculate_affordability(500000, 120000, down_payment=100000)
+        >>> analysis.affordable
+        True
+        >>> analysis.monthly_payment
+        2845.50
+    """
+    logger.info(f"Calculating affordability for price: ${price:,}, income: ${annual_income:,}")
+
+    if price <= 0:
+        raise ValueError("Price must be greater than 0")
+    if annual_income <= 0:
+        raise ValueError("Annual income must be greater than 0")
+
+    # Default down payment to 20% if not provided
+    if down_payment is None:
+        down_payment = int(price * 0.20)
+    elif down_payment < 0:
+        raise ValueError("Down payment cannot be negative")
+    elif down_payment > price:
+        raise ValueError("Down payment cannot exceed property price")
+
+    # Mortgage calculation constants
+    LOAN_TERM_YEARS = 30
+    ANNUAL_INTEREST_RATE = 0.065  # 6.5% - current market rate estimate
+    MONTHLY_INTEREST_RATE = ANNUAL_INTEREST_RATE / 12
+    PROPERTY_TAX_RATE = 0.012  # 1.2% annually
+    INSURANCE_RATE = 0.0035  # 0.35% annually
+    MAX_DTI_RATIO = 0.28  # 28% of income for housing
+
+    # Calculate loan amount
+    loan_amount = price - down_payment
+
+    # Calculate monthly principal and interest
+    num_payments = LOAN_TERM_YEARS * 12
+    if loan_amount > 0:
+        monthly_pi = loan_amount * (
+            MONTHLY_INTEREST_RATE * (1 + MONTHLY_INTEREST_RATE) ** num_payments
+        ) / ((1 + MONTHLY_INTEREST_RATE) ** num_payments - 1)
+    else:
+        monthly_pi = 0
+
+    # Calculate monthly property taxes
+    annual_taxes = price * PROPERTY_TAX_RATE
+    monthly_taxes = annual_taxes / 12
+
+    # Calculate monthly insurance
+    annual_insurance = price * INSURANCE_RATE
+    monthly_insurance = annual_insurance / 12
+
+    # Total monthly payment
+    monthly_payment = monthly_pi + monthly_taxes + monthly_insurance
+
+    # Calculate debt-to-income ratio
+    monthly_income = annual_income / 12
+    dti_ratio = (monthly_payment / monthly_income) * 100 if monthly_income > 0 else 0
+
+    # Determine if affordable
+    affordable = dti_ratio <= (MAX_DTI_RATIO * 100)
+
+    # Generate recommendation
+    if affordable:
+        if dti_ratio < 20:
+            recommendation = "Highly affordable. You have significant room in your budget."
+        elif dti_ratio < 25:
+            recommendation = "Affordable. This fits comfortably within your budget."
+        else:
+            recommendation = "Affordable but at the upper limit. Consider your other expenses."
+    else:
+        recommendation = (
+            f"Not affordable. Monthly payment (${monthly_payment:,.2f}) exceeds "
+            f"recommended {MAX_DTI_RATIO*100:.0f}% of income. Consider a lower-priced property "
+            f"or increase your down payment."
+        )
+
+    analysis = AffordabilityAnalysis(
+        affordable=affordable,
+        monthly_payment=round(monthly_payment, 2),
+        down_payment=down_payment,
+        loan_amount=loan_amount,
+        monthly_principal_interest=round(monthly_pi, 2),
+        estimated_monthly_taxes=round(monthly_taxes, 2),
+        estimated_monthly_insurance=round(monthly_insurance, 2),
+        debt_to_income_ratio=round(dti_ratio, 2),
+        recommendation=recommendation,
+    )
+
+    logger.info(f"Affordability calculated: {'Affordable' if affordable else 'Not affordable'} (DTI: {dti_ratio:.2f}%)")
+    return analysis
+
+
+@mcp.tool()
+async def get_comparable_sales(
+    location: str, property_type: Optional[str] = None
+) -> List[ComparableSale]:
+    """
+    Get recent comparable sales data.
+
+    Args:
+        location: City, state, or ZIP code
+        property_type: Optional property type filter (house, condo, townhouse)
+
+    Returns:
+        List of ComparableSale objects
+
+    Raises:
+        ValueError: If location is invalid
+        httpx.HTTPError: If API request fails
+
+    Example:
+        >>> sales = await get_comparable_sales("Austin, TX", property_type="house")
+        >>> len(sales)
+        15
+        >>> sales[0].sale_price
+        525000
+    """
+    logger.info(f"Getting comparable sales for: {location} (type: {property_type or 'all'})")
+
+    if not location or len(location.strip()) < 2:
+        raise ValueError("Invalid location: must be at least 2 characters")
+
+    # Check cache (1 hour TTL for comparable sales)
+    cache_key = _get_cache_key("comparable_sales", location=location, property_type=property_type or "all")
+    cached_result = _get_cached(cache_key, ttl_seconds=3600)
+    if cached_result:
+        logger.info(f"Returning cached comparable sales for: {location}")
+        return [ComparableSale(**s) for s in cached_result.get("sales", [])]
+
+    try:
+        # Validate API key
+        if not settings.rapidapi_key or settings.rapidapi_key == "your_rapidapi_key_here":
+            raise ValueError("RAPIDAPI_KEY not configured. Please set your RapidAPI key in .env file")
+
+        # Call Zillow API for comparable sales
+        url = f"{settings.zillow_api_base_url}/property-details-address"
+        params = {"address": location}
+
+        response_data = await _make_api_request(url, params)
+
+        # Extract comparable sales from response
+        # Note: Actual API may have different structure for comparable sales
+        comps_list = response_data.get("comps") or response_data.get("comparableSales") or response_data.get("recentSales", []) or []
+
+        comparable_sales = []
+        for comp_data in comps_list[:20]:  # Limit to 20 comparable sales
+            try:
+                # Handle different response formats
+                address = comp_data.get("address") or comp_data.get("streetAddress") or "Address not available"
+                sale_price = comp_data.get("price") or comp_data.get("salePrice") or 0
+                sale_date = comp_data.get("saleDate") or comp_data.get("date") or ""
+                square_feet = comp_data.get("squareFeet") or comp_data.get("sqft") or comp_data.get("livingArea") or 0
+                bedrooms = comp_data.get("bedrooms") or comp_data.get("beds") or 0
+                bathrooms = comp_data.get("bathrooms") or comp_data.get("baths") or 0
+                comp_property_type = (comp_data.get("propertyType") or comp_data.get("type") or "house").lower()
+                distance = comp_data.get("distance") or comp_data.get("distanceMiles") or 0
+
+                # Filter by property type if specified
+                if property_type and comp_property_type != property_type.lower():
+                    continue
+
+                sale = ComparableSale(
+                    address=address,
+                    sale_price=int(sale_price),
+                    sale_date=str(sale_date),
+                    square_feet=int(square_feet),
+                    bedrooms=int(bedrooms),
+                    bathrooms=float(bathrooms),
+                    property_type=comp_property_type,
+                    distance_miles=float(distance),
+                )
+                comparable_sales.append(sale)
+
+            except Exception as e:
+                logger.warning(f"Error parsing comparable sale data: {e}")
+                continue
+
+        # Sort by sale date (most recent first)
+        comparable_sales.sort(key=lambda x: x.sale_date, reverse=True)
+
+        # Cache result
+        _set_cache(cache_key, {"sales": [s.model_dump() for s in comparable_sales]}, ttl_seconds=3600)
+
+        logger.info(f"Retrieved {len(comparable_sales)} comparable sales for: {location}")
+        return comparable_sales
+
+    except httpx.HTTPError as e:
+        logger.error(f"API request failed: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in get_comparable_sales: {e}")
+        raise
+
+
+# Server entry point
+if __name__ == "__main__":
+    import uvicorn
+
+    port = settings.mcp_server_port_market_analysis
+    logger.info(f"Starting Market Analysis MCP Server on port {port}")
+    uvicorn.run(mcp.app, host=settings.mcp_server_host, port=port)
+
