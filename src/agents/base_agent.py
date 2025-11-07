@@ -8,7 +8,7 @@ import os
 from dotenv import load_dotenv
 
 # Load .env file to ensure environment variables are available
-load_dotenv()
+load_dotenv(override=True)
 
 from anthropic import AsyncAnthropic
 from pydantic import BaseModel
@@ -42,16 +42,21 @@ class BaseAgent(ABC):
     All agents must implement the `process` method.
     """
 
-    def __init__(self, name: str, model: str = "claude-3-5-sonnet-20241022"):
+    def __init__(self, name: str, model: Optional[str] = None):
         """
         Initialize base agent.
 
         Args:
             name: Agent name for logging and identification
-            model: Claude model to use
+            model: Claude model to use (defaults to ANTHROPIC_MODEL env var or claude-3-haiku-20240307)
         """
         self.name = name
-        self.model = model
+        # Get model from parameter, environment variable, or default to Claude Haiku
+        if model is None:
+            # Default to Claude Haiku if not specified
+            self.model = os.getenv("ANTHROPIC_MODEL", "claude-3-haiku-20240307")
+        else:
+            self.model = model
         self.logger = logging.getLogger(f"agent.{name}")
 
         # Initialize Anthropic client

@@ -16,6 +16,7 @@ class Settings(BaseSettings):
 
     # LLM API Keys
     anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
+    anthropic_model: str = os.getenv("ANTHROPIC_MODEL", "claude-3-haiku-20240307")
 
     # Real Estate Data API
     rapidapi_key: str = os.getenv("RAPIDAPI_KEY", "")

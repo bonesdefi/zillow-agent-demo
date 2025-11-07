@@ -30,7 +30,7 @@ async def test_base_agent_initialization(mock_anthropic):
     agent = ConcreteTestAgent(name="test_agent")
 
     assert agent.name == "test_agent"
-    assert agent.model == "claude-3-5-sonnet-20241022"
+    assert agent.model == "claude-3-haiku-20240307"  # Default model
     assert agent.client is not None
     assert agent.logger is not None
 

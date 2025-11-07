@@ -47,9 +47,10 @@ async def test_api_key():
     try:
         client = AsyncAnthropic(api_key=api_key)
         
-        # Make a simple test request
+        # Make a simple test request with Claude Haiku
+        model = os.getenv("ANTHROPIC_MODEL", "claude-3-haiku-20240307")
         response = await client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model=model,
             max_tokens=10,
             messages=[
                 {"role": "user", "content": "Say 'test'"}
