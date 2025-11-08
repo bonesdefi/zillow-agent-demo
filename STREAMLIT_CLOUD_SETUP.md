@@ -8,19 +8,22 @@ The app is deployed at: **[https://zillow-agent-demo.streamlit.app/](https://zil
 
 Streamlit Cloud **does not** read `.env` files. You must configure secrets in the Streamlit Cloud dashboard.
 
+**⚠️ Important**: The app is now configured to automatically read from Streamlit secrets. Just add the secrets below and the app will use them.
+
 ### Steps:
 
 1. **Go to Streamlit Cloud Dashboard**
    - Visit [https://share.streamlit.io](https://share.streamlit.io)
-   - Sign in and navigate to your app
+   - Sign in and navigate to your app: **zillow-agent-demo**
 
 2. **Open Settings**
    - Click on the **Settings** (⚙️) icon in the top right
    - Select **Secrets** from the menu
+   - Or go directly to: [https://share.streamlit.io/](https://share.streamlit.io/) → Your app → Settings → Secrets
 
 3. **Add Your Secrets**
    - Click **"Edit secrets"** or the **"+"** button
-   - Paste the following template and fill in your actual API keys:
+   - Paste the following template and fill in your **actual API keys**:
 
 ```toml
 ANTHROPIC_API_KEY = "sk-ant-api03-..."
@@ -32,15 +35,18 @@ ZILLOW_MARKET_API_BASE_URL = "https://zillow-working-api.p.rapidapi.com"
 ZILLOW_MARKET_API_HOST = "zillow-working-api.p.rapidapi.com"
 ```
 
+**Replace the placeholder values with your actual API keys!**
+
 4. **Save and Restart**
    - Click **"Save"**
    - The app will automatically restart
-   - Wait for the deployment to complete
+   - Wait for the deployment to complete (may take 1-2 minutes)
 
 5. **Verify**
-   - Visit your app URL
+   - Visit your app: [https://zillow-agent-demo.streamlit.app/](https://zillow-agent-demo.streamlit.app/)
    - Try a search query (e.g., "Find houses in Las Vegas")
    - The app should now work with API keys from secrets
+   - You should see properties and analysis results (not the API key error)
 
 ## Troubleshooting
 
