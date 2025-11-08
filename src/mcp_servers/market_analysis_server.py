@@ -334,8 +334,49 @@ async def get_school_ratings(location: str, radius: int = 5) -> List[SchoolRatin
 
         response_data = await _make_api_request(url, params)
 
-        # Extract school data from response
-        schools_list = response_data.get("schools", []) or response_data.get("nearbySchools", []) or []
+        # Extract school data from response - try multiple possible locations
+        # The API might return schools in different nested structures
+        schools_list = []
+        
+        # Try various possible keys and nested paths
+        if "schools" in response_data:
+            schools_list = response_data["schools"] if isinstance(response_data["schools"], list) else []
+        elif "nearbySchools" in response_data:
+            schools_list = response_data["nearbySchools"] if isinstance(response_data["nearbySchools"], list) else []
+        elif "data" in response_data and isinstance(response_data["data"], dict):
+            # Check if schools are nested under data
+            schools_list = response_data["data"].get("schools", []) or response_data["data"].get("nearbySchools", []) or []
+        elif "property" in response_data and isinstance(response_data["property"], dict):
+            # Check if schools are nested under property
+            schools_list = response_data["property"].get("schools", []) or response_data["property"].get("nearbySchools", []) or []
+        
+        # Log what we found for debugging
+        if not schools_list:
+            logger.info(f"No school data found in API response. Response keys: {list(response_data.keys())}")
+            # Log a sample of the response structure for debugging
+            if response_data:
+                sample_keys = list(response_data.keys())[:10]
+                logger.debug(f"Sample response structure - top-level keys: {sample_keys}")
+                # Try to find any list that might contain school data
+                for key, value in response_data.items():
+                    if isinstance(value, list) and len(value) > 0:
+                        logger.debug(f"Found list under key '{key}' with {len(value)} items. First item keys: {list(value[0].keys()) if isinstance(value[0], dict) else 'not a dict'}")
+                        # Check if items look like school data
+                        if isinstance(value[0], dict) and any(k in value[0] for k in ["name", "schoolName", "rating", "score", "type", "schoolType"]):
+                            logger.info(f"Found potential school data under key '{key}'")
+                            schools_list = value
+                            break
+                    elif isinstance(value, dict):
+                        # Recursively check nested dictionaries
+                        nested_keys = list(value.keys())[:10]
+                        logger.debug(f"Found nested dict under key '{key}' with keys: {nested_keys}")
+                        # Check if this dict has school-related keys
+                        if any(k in value for k in ["schools", "nearbySchools", "school"]):
+                            school_key = next((k for k in ["schools", "nearbySchools", "school"] if k in value), None)
+                            if school_key and isinstance(value[school_key], list):
+                                logger.info(f"Found school data under nested key '{key}.{school_key}'")
+                                schools_list = value[school_key]
+                                break
 
         school_ratings = []
         for school_data in schools_list[:20]:  # Limit to 20 schools

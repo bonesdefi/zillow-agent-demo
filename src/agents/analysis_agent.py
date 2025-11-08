@@ -162,14 +162,18 @@ class AnalysisAgent(BaseAgent):
         """
         system_prompt = """You are a real estate analyst. Generate a concise pros/cons analysis.
 
-Output JSON:
+IMPORTANT: You MUST respond with ONLY valid JSON. Do not include any markdown formatting, code blocks, or explanatory text. Return ONLY the JSON object.
+
+Required JSON format:
 {
     "pros": ["list", "of", "positive", "aspects"],
     "cons": ["list", "of", "concerns"],
     "overall": "brief overall assessment"
 }
 
-Focus on: location, price, schools, market trends, neighborhood quality."""
+Focus on: location, price, schools, market trends, neighborhood quality.
+
+Return ONLY the JSON object, nothing else."""
 
         user_message = f"""
 Property: {property_data.get('address')}
@@ -185,9 +189,65 @@ Analysis:
 
         try:
             response = await self._call_llm(system_prompt, user_message, temperature=0.5)
+            
+            # Clean up response - remove markdown code blocks if present
+            cleaned_response = response.strip()
+            
+            # Remove markdown code blocks (```json ... ```)
+            if cleaned_response.startswith("```"):
+                # Find the start and end of the code block
+                lines = cleaned_response.split("\n")
+                # Remove first line (```json or ```)
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                # Remove last line if it's ```
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                cleaned_response = "\n".join(lines).strip()
+            
+            # Try to extract JSON from the response
+            # Look for JSON object boundaries
+            start_idx = cleaned_response.find("{")
+            end_idx = cleaned_response.rfind("}")
+            
+            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                json_str = cleaned_response[start_idx:end_idx + 1]
+                try:
+                    return json.loads(json_str)
+                except json.JSONDecodeError:
+                    # Try parsing the entire cleaned response
+                    pass
+            
+            # Try parsing the cleaned response directly
+            return json.loads(cleaned_response)
 
-            return json.loads(response)
-
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Failed to parse JSON from LLM response: {e}. Response: {response[:200]}")
+            # Return a structured fallback with available analysis data
+            pros = []
+            cons = []
+            overall = "Analysis completed but summary generation failed."
+            
+            # Try to extract some useful information from the analysis
+            if analysis.get("neighborhood"):
+                pros.append("Neighborhood data available")
+            if analysis.get("market_trends"):
+                pros.append("Market trends analyzed")
+            if len(analysis.get("schools", [])) == 0:
+                cons.append("School information unavailable")
+            if not analysis.get("neighborhood") or not analysis.get("market_trends"):
+                cons.append("Some analysis data incomplete")
+            
+            if not pros:
+                pros.append("Property available")
+            if not cons:
+                cons.append("Limited analysis data")
+                
+            return {
+                "pros": pros,
+                "cons": cons,
+                "overall": overall,
+            }
         except Exception as e:
             self.logger.error(f"Failed to generate summary: {e}")
             return {
