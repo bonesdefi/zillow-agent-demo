@@ -6,10 +6,11 @@ from typing import Any, Dict
 
 from src.agents.base_agent import BaseAgent, AgentState, AgentMCPError
 from src.mcp_servers.market_analysis_server import (
-    get_neighborhood_stats,
-    get_school_ratings,
-    get_market_trends,
-    calculate_affordability,
+    get_neighborhood_stats_direct,
+    get_school_ratings_direct,
+    get_market_trends_direct,
+    calculate_affordability_direct,
+    get_comparable_sales_direct,
 )
 
 
@@ -110,7 +111,7 @@ class AnalysisAgent(BaseAgent):
 
         try:
             # Get neighborhood stats - use ZPID if available for better data
-            neighborhood = await get_neighborhood_stats(location, zpid=zpid)
+            neighborhood = await get_neighborhood_stats_direct(location, zpid=zpid)
             analysis["neighborhood"] = neighborhood.model_dump()
 
         except Exception as e:
@@ -119,7 +120,7 @@ class AnalysisAgent(BaseAgent):
 
         try:
             # Get school ratings - use ZPID if available for better data
-            schools = await get_school_ratings(location, radius=5, zpid=zpid)
+            schools = await get_school_ratings_direct(location, radius=5, zpid=zpid)
             analysis["schools"] = [s.model_dump() for s in schools]
 
         except Exception as e:
@@ -131,7 +132,7 @@ class AnalysisAgent(BaseAgent):
             # Pass property-specific price and square footage for accurate price_per_sqft calculation
             property_price = property_data.get("price")
             property_sqft = property_data.get("square_feet")
-            trends = await get_market_trends(location, property_price=property_price, property_sqft=property_sqft)
+            trends = await get_market_trends_direct(location, property_price=property_price, property_sqft=property_sqft)
             analysis["market_trends"] = trends.model_dump()
 
         except Exception as e:
@@ -140,8 +141,7 @@ class AnalysisAgent(BaseAgent):
         
         try:
             # Get comparable sales - use ZPID if available for better data
-            from src.mcp_servers.market_analysis_server import get_comparable_sales
-            comparable_sales = await get_comparable_sales(location, property_type=property_data.get("property_type"), zpid=zpid)
+            comparable_sales = await get_comparable_sales_direct(location, property_type=property_data.get("property_type"), zpid=zpid)
             analysis["comparable_sales"] = [s.model_dump() for s in comparable_sales]
 
         except Exception as e:
@@ -155,7 +155,7 @@ class AnalysisAgent(BaseAgent):
         if annual_income:
             try:
                 price = property_data.get("price", 0)
-                affordability = await calculate_affordability(price, annual_income)
+                affordability = await calculate_affordability_direct(price, annual_income)
                 analysis["affordability"] = affordability.model_dump()
 
             except Exception as e:

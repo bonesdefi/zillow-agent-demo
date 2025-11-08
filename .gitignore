@@ -18,6 +18,10 @@ htmlcov/
 .env
 .env.local
 
+# Streamlit secrets (never commit real secrets!)
+STREAMLIT_SECRETS_*.toml
+.streamlit/secrets.toml
+
 # IDE
 .vscode/
 .idea/

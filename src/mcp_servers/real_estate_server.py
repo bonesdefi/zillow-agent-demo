@@ -151,11 +151,13 @@ class Property(BaseModel):
     lot_size: Optional[float] = None
 
 
-# MCP Tools
-@mcp.tool()
-async def search_properties(params: PropertySearchParams) -> List[Property]:
+# Internal implementation (can be called directly by agents)
+async def _search_properties_impl(params: PropertySearchParams) -> List[Property]:
     """
-    Search for properties matching the given criteria.
+    Internal implementation of property search.
+
+    This function contains the actual implementation and can be called directly
+    by agents without going through the MCP tool wrapper.
 
     Args:
         params: Search parameters including location, price range, etc.
@@ -166,16 +168,6 @@ async def search_properties(params: PropertySearchParams) -> List[Property]:
     Raises:
         ValueError: If search parameters are invalid
         httpx.HTTPError: If API request fails
-
-    Example:
-        >>> params = PropertySearchParams(
-        ...     location="Austin, TX",
-        ...     max_price=600000,
-        ...     bedrooms=3
-        ... )
-        >>> properties = await search_properties(params)
-        >>> len(properties)
-        12
     """
     logger.info(f"Searching properties with params: {params}")
 
@@ -426,8 +418,52 @@ async def search_properties(params: PropertySearchParams) -> List[Property]:
         logger.error(f"API request failed: {e}")
         raise
     except Exception as e:
-        logger.error(f"Unexpected error in search_properties: {e}")
+        logger.error(f"Unexpected error in _search_properties_impl: {e}")
         raise
+
+
+# MCP Tool wrapper (for MCP protocol)
+@mcp.tool()
+async def search_properties(params: PropertySearchParams) -> List[Property]:
+    """
+    Search for properties matching the given criteria.
+
+    This is the MCP tool wrapper that calls the internal implementation.
+    Agents should call search_properties_direct() directly to avoid the FunctionTool wrapper.
+
+    Args:
+        params: Search parameters including location, price range, etc.
+
+    Returns:
+        List of Property objects matching the criteria
+
+    Raises:
+        ValueError: If search parameters are invalid
+        httpx.HTTPError: If API request fails
+
+    Example:
+        >>> params = PropertySearchParams(
+        ...     location="Austin, TX",
+        ...     max_price=600000,
+        ...     bedrooms=3
+        ... )
+        >>> properties = await search_properties(params)
+        >>> len(properties)
+        12
+    """
+    return await _search_properties_impl(params)
+
+
+# Export the internal implementation for direct use by agents
+# This allows agents to call the function directly without going through MCP tool wrapper
+async def search_properties_direct(params: PropertySearchParams) -> List[Property]:
+    """
+    Direct callable version of search_properties for use by agents.
+    
+    This function can be called directly by agents without the MCP tool wrapper.
+    It bypasses the FunctionTool object created by @mcp.tool() decorator.
+    """
+    return await _search_properties_impl(params)
 
 
 def _generate_mock_properties(params: PropertySearchParams) -> List[Property]:

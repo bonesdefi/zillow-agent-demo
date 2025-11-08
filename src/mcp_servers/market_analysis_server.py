@@ -189,9 +189,8 @@ class ComparableSale(BaseModel):
     distance_miles: float = Field(..., ge=0)
 
 
-# MCP Tools
-@mcp.tool()
-async def get_neighborhood_stats(location: str, zpid: Optional[str] = None) -> NeighborhoodStats:
+# Internal implementation (can be called directly by agents)
+async def _get_neighborhood_stats_impl(location: str, zpid: Optional[str] = None) -> NeighborhoodStats:
     """
     Get demographics, crime, and walkability scores for a location.
 
@@ -366,12 +365,25 @@ async def get_neighborhood_stats(location: str, zpid: Optional[str] = None) -> N
         logger.error(f"API request failed: {e}")
         raise
     except Exception as e:
-        logger.error(f"Unexpected error in get_neighborhood_stats: {e}")
+        logger.error(f"Unexpected error in _get_neighborhood_stats_impl: {e}")
         raise
 
 
+# MCP Tool wrapper (for MCP protocol)
 @mcp.tool()
-async def get_school_ratings(location: str, radius: int = 5, zpid: Optional[str] = None) -> List[SchoolRating]:
+async def get_neighborhood_stats(location: str, zpid: Optional[str] = None) -> NeighborhoodStats:
+    """MCP tool wrapper. Agents should use get_neighborhood_stats_direct() instead."""
+    return await _get_neighborhood_stats_impl(location, zpid=zpid)
+
+
+# Direct callable version for agents
+async def get_neighborhood_stats_direct(location: str, zpid: Optional[str] = None) -> NeighborhoodStats:
+    """Direct callable version for use by agents (bypasses MCP tool wrapper)."""
+    return await _get_neighborhood_stats_impl(location, zpid=zpid)
+
+
+# Internal implementation for school ratings
+async def _get_school_ratings_impl(location: str, radius: int = 5, zpid: Optional[str] = None) -> List[SchoolRating]:
     """
     Get school quality ratings for area.
 
@@ -571,12 +583,25 @@ async def get_school_ratings(location: str, radius: int = 5, zpid: Optional[str]
         logger.error(f"API request failed: {e}")
         raise
     except Exception as e:
-        logger.error(f"Unexpected error in get_school_ratings: {e}")
+        logger.error(f"Unexpected error in _get_school_ratings_impl: {e}")
         raise
 
 
+# MCP Tool wrapper (for MCP protocol)
 @mcp.tool()
-async def get_market_trends(location: str, timeframe: str = "1y", property_price: Optional[int] = None, property_sqft: Optional[int] = None) -> MarketTrends:
+async def get_school_ratings(location: str, radius: int = 5, zpid: Optional[str] = None) -> List[SchoolRating]:
+    """MCP tool wrapper. Agents should use get_school_ratings_direct() instead."""
+    return await _get_school_ratings_impl(location, radius=radius, zpid=zpid)
+
+
+# Direct callable version for agents
+async def get_school_ratings_direct(location: str, radius: int = 5, zpid: Optional[str] = None) -> List[SchoolRating]:
+    """Direct callable version for use by agents (bypasses MCP tool wrapper)."""
+    return await _get_school_ratings_impl(location, radius=radius, zpid=zpid)
+
+
+# Internal implementation for market trends
+async def _get_market_trends_impl(location: str, timeframe: str = "1y", property_price: Optional[int] = None, property_sqft: Optional[int] = None) -> MarketTrends:
     """
     Get price trends and market velocity.
 
@@ -820,12 +845,25 @@ async def get_market_trends(location: str, timeframe: str = "1y", property_price
         logger.error(f"API request failed: {e}")
         raise
     except Exception as e:
-        logger.error(f"Unexpected error in get_market_trends: {e}")
+        logger.error(f"Unexpected error in _get_market_trends_impl: {e}")
         raise
 
 
+# MCP Tool wrapper (for MCP protocol)
 @mcp.tool()
-async def calculate_affordability(
+async def get_market_trends(location: str, timeframe: str = "1y", property_price: Optional[int] = None, property_sqft: Optional[int] = None) -> MarketTrends:
+    """MCP tool wrapper. Agents should use get_market_trends_direct() instead."""
+    return await _get_market_trends_impl(location, timeframe=timeframe, property_price=property_price, property_sqft=property_sqft)
+
+
+# Direct callable version for agents
+async def get_market_trends_direct(location: str, timeframe: str = "1y", property_price: Optional[int] = None, property_sqft: Optional[int] = None) -> MarketTrends:
+    """Direct callable version for use by agents (bypasses MCP tool wrapper)."""
+    return await _get_market_trends_impl(location, timeframe=timeframe, property_price=property_price, property_sqft=property_sqft)
+
+
+# Internal implementation for affordability
+async def _calculate_affordability_impl(
     price: int, annual_income: int, down_payment: Optional[int] = None
 ) -> AffordabilityAnalysis:
     """
@@ -942,8 +980,25 @@ async def calculate_affordability(
     return analysis
 
 
+# MCP Tool wrapper (for MCP protocol)
 @mcp.tool()
-async def get_comparable_sales(
+async def calculate_affordability(
+    price: int, annual_income: int, down_payment: Optional[int] = None
+) -> AffordabilityAnalysis:
+    """MCP tool wrapper. Agents should use calculate_affordability_direct() instead."""
+    return await _calculate_affordability_impl(price, annual_income, down_payment=down_payment)
+
+
+# Direct callable version for agents
+async def calculate_affordability_direct(
+    price: int, annual_income: int, down_payment: Optional[int] = None
+) -> AffordabilityAnalysis:
+    """Direct callable version for use by agents (bypasses MCP tool wrapper)."""
+    return await _calculate_affordability_impl(price, annual_income, down_payment=down_payment)
+
+
+# Internal implementation for comparable sales
+async def _get_comparable_sales_impl(
     location: str, property_type: Optional[str] = None, zpid: Optional[str] = None
 ) -> List[ComparableSale]:
     """
@@ -1188,8 +1243,25 @@ async def get_comparable_sales(
         logger.error(f"API request failed: {e}")
         raise
     except Exception as e:
-        logger.error(f"Unexpected error in get_comparable_sales: {e}")
+        logger.error(f"Unexpected error in _get_comparable_sales_impl: {e}")
         raise
+
+
+# MCP Tool wrapper (for MCP protocol)
+@mcp.tool()
+async def get_comparable_sales(
+    location: str, property_type: Optional[str] = None, zpid: Optional[str] = None
+) -> List[ComparableSale]:
+    """MCP tool wrapper. Agents should use get_comparable_sales_direct() instead."""
+    return await _get_comparable_sales_impl(location, property_type=property_type, zpid=zpid)
+
+
+# Direct callable version for agents
+async def get_comparable_sales_direct(
+    location: str, property_type: Optional[str] = None, zpid: Optional[str] = None
+) -> List[ComparableSale]:
+    """Direct callable version for use by agents (bypasses MCP tool wrapper)."""
+    return await _get_comparable_sales_impl(location, property_type=property_type, zpid=zpid)
 
 
 # Server entry point

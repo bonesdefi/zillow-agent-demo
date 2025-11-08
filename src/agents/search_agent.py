@@ -5,7 +5,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from src.agents.base_agent import BaseAgent, AgentState, AgentMCPError
-from src.mcp_servers.real_estate_server import search_properties, PropertySearchParams
+from src.mcp_servers.real_estate_server import search_properties_direct, PropertySearchParams
 
 
 logger = logging.getLogger(__name__)
@@ -203,8 +203,8 @@ Examples:
                 property_type=criteria.get("property_type"),
             )
 
-            # Call MCP server
-            properties = await search_properties(params)
+            # Call MCP server implementation directly (bypasses MCP tool wrapper)
+            properties = await search_properties_direct(params)
 
             # Convert to dict format for state
             return [p.model_dump() for p in properties]
