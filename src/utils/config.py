@@ -18,13 +18,21 @@ class Settings(BaseSettings):
     anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
     anthropic_model: str = os.getenv("ANTHROPIC_MODEL", "claude-3-haiku-20240307")
 
-    # Real Estate Data API
+    # Real Estate Data API (for property search and details)
     rapidapi_key: str = os.getenv("RAPIDAPI_KEY", "")
     zillow_api_base_url: str = os.getenv(
         "ZILLOW_API_BASE_URL", "https://real-time-zillow-data.p.rapidapi.com"
     )
     zillow_api_host: str = os.getenv(
         "ZILLOW_API_HOST", "real-time-zillow-data.p.rapidapi.com"
+    )
+
+    # Zillow Working API (for market analytics - housing_market endpoint)
+    zillow_market_api_base_url: str = os.getenv(
+        "ZILLOW_MARKET_API_BASE_URL", "https://zillow-working-api.p.rapidapi.com"
+    )
+    zillow_market_api_host: str = os.getenv(
+        "ZILLOW_MARKET_API_HOST", "zillow-working-api.p.rapidapi.com"
     )
 
     # MCP Server Configuration

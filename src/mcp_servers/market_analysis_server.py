@@ -59,7 +59,7 @@ def _set_cache(key: str, value: dict, ttl_seconds: int = 3600) -> None:
 
 
 async def _make_api_request(
-    url: str, params: dict, max_retries: int = 3, retry_delay: float = 1.0
+    url: str, params: dict, max_retries: int = 3, retry_delay: float = 1.0, use_market_api: bool = False
 ) -> dict:
     """
     Make HTTP request with retry logic and exponential backoff.
@@ -69,6 +69,7 @@ async def _make_api_request(
         params: Request parameters
         max_retries: Maximum number of retry attempts
         retry_delay: Initial retry delay in seconds
+        use_market_api: If True, use zillow_market_api_host instead of zillow_api_host
 
     Returns:
         JSON response as dictionary
@@ -80,9 +81,12 @@ async def _make_api_request(
     if not settings.rapidapi_key:
         raise ValueError("RAPIDAPI_KEY not configured")
 
+    # Use market API host if specified
+    api_host = settings.zillow_market_api_host if use_market_api else settings.zillow_api_host
+    
     headers = {
         "X-RapidAPI-Key": settings.rapidapi_key,
-        "X-RapidAPI-Host": settings.zillow_api_host,
+        "X-RapidAPI-Host": api_host,
     }
 
     for attempt in range(max_retries):
@@ -519,64 +523,91 @@ async def get_market_trends(location: str, timeframe: str = "1y") -> MarketTrend
         if not settings.rapidapi_key or settings.rapidapi_key == "your_rapidapi_key_here":
             raise ValueError("RAPIDAPI_KEY not configured. Please set your RapidAPI key in .env file")
 
-        # Call Zillow API for market data
-        # Use property-details-address endpoint (works with real-time-zillow-data API)
-        url = f"{settings.zillow_api_base_url}/property-details-address"
-        params = {"address": location}
+        # Extract city/state from location (housing_market endpoint needs city/state, not full address)
+        # Try to parse city, state from location string
+        search_query = location
+        if "," in location:
+            # If it's a full address, try to extract city, state
+            parts = [p.strip() for p in location.split(",")]
+            if len(parts) >= 2:
+                # Assume last two parts are state and zip, second-to-last might be city
+                # Or just use the city, state part
+                if len(parts) >= 3:
+                    # Format: "street, city, state, zip"
+                    search_query = f"{parts[-3]}, {parts[-2]}"
+                else:
+                    # Format: "city, state" or "street, city state"
+                    search_query = f"{parts[-2]}, {parts[-1]}"
         
-        response_data = await _make_api_request(url, params)
+        # Use the new housing_market endpoint from zillow-working-api
+        url = f"{settings.zillow_market_api_base_url}/housing_market"
+        params = {
+            "search_query": search_query,
+            "home_type": "All_Homes",
+            "exclude_rentalMarketTrends": "true",
+            "exclude_neighborhoods_zhvi": "true",
+        }
+        
+        logger.info(f"Calling housing_market API with search_query: {search_query}")
+        response_data = await _make_api_request(url, params, use_market_api=True)
 
         # Log response structure for debugging
         logger.info(f"API response keys for market trends: {list(response_data.keys())[:20]}")
 
-        # Extract market data from response - try multiple possible locations
-        # Check top level, data.*, property.*
+        # Parse the rich market data from housing_market endpoint
+        market_overview = response_data.get("market_overview", {})
+        market_analytics = response_data.get("market_analytics", {})
+        
+        # Extract median price and typical home value
         median_price = (
-            response_data.get("price")
-            or response_data.get("medianPrice")
-            or response_data.get("zestimate")
-            or (response_data.get("data", {}).get("price") if isinstance(response_data.get("data"), dict) else None)
-            or (response_data.get("property", {}).get("price") if isinstance(response_data.get("property"), dict) else None)
+            market_overview.get("median_sale_price")
+            or market_overview.get("median_list_price")
+            or market_overview.get("typical_home_values")
             or 0
         )
         
-        price_per_sqft = (
-            response_data.get("pricePerSqft")
-            or response_data.get("pricePerSquareFoot")
-            or response_data.get("price_per_sqft")
-            or (response_data.get("data", {}).get("pricePerSqft") if isinstance(response_data.get("data"), dict) else None)
-            or 0
-        )
-
-        # Calculate trends from API response data
-        # Trends are calculated from available Zillow API data
-        price_change_percent = (
-            response_data.get("priceChangePercent")
-            or response_data.get("price_change_percent")
-            or (response_data.get("data", {}).get("priceChangePercent") if isinstance(response_data.get("data"), dict) else None)
-            or 0
-        )
+        # Extract price change from description or calculate from zhviRange
+        price_change_percent = 0.0
+        description = market_overview.get("description", "")
+        if "down" in description.lower() or "up" in description.lower():
+            # Try to extract percentage from description
+            import re
+            match = re.search(r'([+-]?\d+\.?\d*)%', description)
+            if match:
+                price_change_percent = float(match.group(1))
         
+        # Calculate price change from zhviRange if available (compare first and last values)
+        zhvi_range = market_analytics.get("zhviRange", [])
+        if len(zhvi_range) > 1:
+            first_value = zhvi_range[-1].get("dataValue", 0)  # Oldest (last in array)
+            last_value = zhvi_range[0].get("dataValue", 0)     # Newest (first in array)
+            if first_value > 0:
+                price_change_percent = ((last_value - first_value) / first_value) * 100
+        
+        # Extract days on market from market listing data
+        mrkt_listing_latest = market_analytics.get("mrktListingLatest", {})
         days_on_market = (
-            response_data.get("daysOnMarket")
-            or response_data.get("daysOnZillow")
-            or response_data.get("days_on_market")
-            or (response_data.get("data", {}).get("daysOnMarket") if isinstance(response_data.get("data"), dict) else None)
+            mrkt_listing_latest.get("medianDaysToPending")
+            or market_overview.get("median_days_to_pending")
             or 30
         )
         
+        # Extract inventory count
         inventory_count = (
-            response_data.get("inventoryCount")
-            or response_data.get("inventory_count")
-            or (response_data.get("data", {}).get("inventoryCount") if isinstance(response_data.get("data"), dict) else None)
+            market_overview.get("for_sale_inventory")
+            or mrkt_listing_latest.get("forSaleInventory")
             or 0
         )
+        
+        # Calculate sales velocity from sale-to-list ratio and inventory
+        sale_to_list_ratio = market_overview.get("market_saletolist_ratio", 1.0)
+        new_listings = market_overview.get("new_listings", 0)
+        sales_velocity = new_listings * sale_to_list_ratio if new_listings > 0 else 0
+        
+        # Calculate price per sqft (estimate - we don't have square footage in market data)
+        price_per_sqft = 0  # Can't calculate without property size
 
-        # Calculate sales velocity (properties sold per month)
-        # This is an estimate based on available data
-        sales_velocity = response_data.get("salesVelocity") or (inventory_count / max(days_on_market / 30, 1))
-
-        # Determine trend direction
+        # Determine trend direction from price change
         if price_change_percent > 2:
             trend_direction = "up"
         elif price_change_percent < -2:
