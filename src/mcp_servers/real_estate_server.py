@@ -215,7 +215,11 @@ async def search_properties(params: PropertySearchParams) -> List[Property]:
         # Note: The API may support additional filters - check documentation
         # For now, we'll filter results after receiving them
         
-        url = f"{settings.zillow_api_base_url}/search"
+        # Use the new API search endpoint
+        # Try /search/byaddress first, fallback to /search if needed
+        from urllib.parse import quote
+        search_endpoint = quote("search/byaddress", safe="")
+        url = f"{settings.zillow_api_base_url}/{search_endpoint}"
         logger.info(f"Calling Zillow API: {url} with params: {api_params}")
         
         response_data = None
@@ -223,10 +227,23 @@ async def search_properties(params: PropertySearchParams) -> List[Property]:
             response_data = await _make_api_request(url, api_params)
             logger.info(f"API call successful, received response")
         except httpx.HTTPStatusError as e:
-            error_status = e.response.status_code
-            error_msg = str(e)
-            logger.error(f"API request failed with status {error_status}: {error_msg}")
-            return []
+            # If /search/byaddress doesn't work (404), try the old /search endpoint
+            if e.response.status_code == 404:
+                logger.warning(f"Endpoint /search/byaddress not found (404), trying /search")
+                url = f"{settings.zillow_api_base_url}/search"
+                try:
+                    response_data = await _make_api_request(url, api_params)
+                    logger.info(f"API call successful with fallback endpoint /search")
+                except Exception as fallback_error:
+                    error_status = e.response.status_code
+                    error_msg = str(fallback_error)
+                    logger.error(f"API request failed with status {error_status}: {error_msg}")
+                    return []
+            else:
+                error_status = e.response.status_code
+                error_msg = str(e)
+                logger.error(f"API request failed with status {error_status}: {error_msg}")
+                return []
         except Exception as e:
             logger.error(f"Unexpected error calling Zillow API: {e}")
             return []
