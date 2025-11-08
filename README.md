@@ -4,6 +4,8 @@ A production-quality multi-agent AI system using LangGraph orchestration with cu
 
 **Inspired by Zillow's Agentic AI initiative - built with production-grade architecture and best practices.**
 
+🌐 **Live Demo**: [https://zillow-agent-demo.streamlit.app/](https://zillow-agent-demo.streamlit.app/)
+
 ![Real Estate AI Assistant UI](docs/images/streamlit-ui-screenshot.png)
 
 *Streamlit UI showing property search results with AI analysis, school information, and market trends*
@@ -49,6 +51,8 @@ This project showcases advanced AI system architecture including:
   - **RapidAPI key** - Get from [Real-Time Zillow Data API](https://rapidapi.com/marketplace/api/real-time-zillow-data) (for real Zillow property data)
 
 ### Installation
+
+**🌐 Try it live**: [https://zillow-agent-demo.streamlit.app/](https://zillow-agent-demo.streamlit.app/)
 
 1. Clone the repository:
 ```bash
@@ -120,6 +124,17 @@ The application will be available at `http://localhost:8501`
 - ✅ **Conversation memory and context** - User preferences and history tracking
 - ✅ **Production-ready error handling** - Comprehensive error handling and logging
 - ✅ **Comprehensive testing** - 96 tests with 80%+ code coverage
+
+## 🌐 Live Demo
+
+**Try the application live**: [https://zillow-agent-demo.streamlit.app/](https://zillow-agent-demo.streamlit.app/)
+
+The live demo showcases all features including:
+- Real-time property search with natural language queries
+- AI-powered property analysis and recommendations
+- Market trends and neighborhood statistics
+- School ratings and comparable sales data
+- Interactive chat interface with agent activity monitoring
 
 ## 📚 Documentation
 
