@@ -569,12 +569,14 @@ async def get_market_trends(location: str, timeframe: str = "1y") -> MarketTrend
         # Extract price change from description or calculate from zhviRange
         price_change_percent = 0.0
         description = market_overview.get("description", "")
-        if "down" in description.lower() or "up" in description.lower():
-            # Try to extract percentage from description
-            import re
+        if description and ("down" in description.lower() or "up" in description.lower()):
+            # Try to extract percentage from description (e.g., "down 6.8%")
             match = re.search(r'([+-]?\d+\.?\d*)%', description)
             if match:
                 price_change_percent = float(match.group(1))
+                # Make negative if description says "down"
+                if "down" in description.lower() and price_change_percent > 0:
+                    price_change_percent = -price_change_percent
         
         # Calculate price change from zhviRange if available (compare first and last values)
         zhvi_range = market_analytics.get("zhviRange", [])
@@ -604,8 +606,10 @@ async def get_market_trends(location: str, timeframe: str = "1y") -> MarketTrend
         new_listings = market_overview.get("new_listings", 0)
         sales_velocity = new_listings * sale_to_list_ratio if new_listings > 0 else 0
         
-        # Calculate price per sqft (estimate - we don't have square footage in market data)
-        price_per_sqft = 0  # Can't calculate without property size
+        # Calculate price per sqft (estimate using median price and typical home size ~2000 sqft)
+        # This is an approximation since we don't have exact square footage in market data
+        typical_sqft = 2000  # Typical home size for estimation
+        price_per_sqft = float(median_price) / typical_sqft if median_price > 0 and typical_sqft > 0 else 0
 
         # Determine trend direction from price change
         if price_change_percent > 2:
@@ -634,27 +638,52 @@ async def get_market_trends(location: str, timeframe: str = "1y") -> MarketTrend
         return trends
 
     except httpx.HTTPStatusError as e:
-        # Handle 400 Bad Request (endpoint requires specific address, not city/state)
-        if e.response.status_code == 400:
+        # Handle 400/404 errors - fallback to old endpoint or return estimated data
+        if e.response.status_code in [400, 404]:
             logger.warning(
-                f"API returned 400 for location '{location}'. "
-                f"Endpoint requires specific address. Returning estimated market trends."
+                f"API returned {e.response.status_code} for location '{location}'. "
+                f"Trying fallback to property-details-address endpoint."
             )
-            # Return default/estimated trends when API doesn't support city-level queries
-            trends = MarketTrends(
-                location=location,
-                timeframe=timeframe,
-                median_price=0.0,
-                price_change_percent=0.0,
-                days_on_market_avg=30.0,
-                inventory_count=0,
-                sales_velocity=0.0,
-                price_per_sqft=0.0,
-                trend_direction="stable",
-            )
-            # Cache the default result
-            _set_cache(cache_key, trends.model_dump(), ttl_seconds=3600)
-            return trends
+            try:
+                # Fallback to old endpoint with full address
+                url = f"{settings.zillow_api_base_url}/property-details-address"
+                params = {"address": location}
+                response_data = await _make_api_request(url, params, use_market_api=False)
+                
+                # Extract basic data from property details
+                median_price = response_data.get("price") or response_data.get("zestimate") or 0
+                price_change_percent = response_data.get("priceChangePercent") or 0
+                days_on_market = response_data.get("daysOnMarket") or 30
+                
+                trends = MarketTrends(
+                    location=location,
+                    timeframe=timeframe,
+                    median_price=float(median_price),
+                    price_change_percent=float(price_change_percent),
+                    days_on_market_avg=float(days_on_market),
+                    inventory_count=0,
+                    sales_velocity=0.0,
+                    price_per_sqft=float(median_price) / 2000 if median_price > 0 else 0,
+                    trend_direction="stable" if abs(price_change_percent) < 2 else ("up" if price_change_percent > 0 else "down"),
+                )
+                _set_cache(cache_key, trends.model_dump(), ttl_seconds=3600)
+                return trends
+            except Exception as fallback_error:
+                logger.warning(f"Fallback also failed: {fallback_error}. Returning estimated trends.")
+                # Return default/estimated trends when both APIs fail
+                trends = MarketTrends(
+                    location=location,
+                    timeframe=timeframe,
+                    median_price=0.0,
+                    price_change_percent=0.0,
+                    days_on_market_avg=30.0,
+                    inventory_count=0,
+                    sales_velocity=0.0,
+                    price_per_sqft=0.0,
+                    trend_direction="stable",
+                )
+                _set_cache(cache_key, trends.model_dump(), ttl_seconds=3600)
+                return trends
         logger.error(f"API request failed: {e}")
         raise
     except httpx.HTTPError as e:
