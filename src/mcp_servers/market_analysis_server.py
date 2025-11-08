@@ -616,13 +616,25 @@ async def get_market_trends(location: str, timeframe: str = "1y", property_price
     if timeframe not in valid_timeframes:
         raise ValueError(f"Invalid timeframe. Must be one of: {', '.join(valid_timeframes)}")
 
-    # Check cache (1 hour TTL for market trends) - include property-specific params in cache key
-    # Note: We cache by city/state location since market trends are city-level, but price_per_sqft uses property data
-    cache_key = _get_cache_key("market_trends", location=location, timeframe=timeframe, price=property_price or "none", sqft=property_sqft or "none")
+    # Check cache (1 hour TTL for market trends)
+    # Note: Market trends (median_price, price_change_percent, etc.) are city-level and can be cached.
+    # price_per_sqft is property-specific and should be recalculated from property data.
+    # Extract city/state for cache key (market trends are city-level)
+    cache_location = location
+    if "," in location:
+        parts = [p.strip() for p in location.split(",")]
+        if len(parts) >= 2:
+            # Extract city, state for cache key
+            if len(parts) >= 3:
+                cache_location = f"{parts[-3]}, {parts[-2]}"  # "city, state"
+            else:
+                cache_location = f"{parts[-2]}, {parts[-1]}"  # "city, state"
+    
+    cache_key = _get_cache_key("market_trends", location=cache_location, timeframe=timeframe)
     cached_result = _get_cached(cache_key, ttl_seconds=3600)
     if cached_result:
-        logger.info(f"Returning cached market trends for: {location}")
-        # If cached, still recalculate price_per_sqft if property-specific data was provided
+        logger.info(f"Returning cached city-level market trends for: {cache_location}")
+        # Recalculate price_per_sqft if property-specific data was provided
         if property_price and property_sqft and property_sqft > 0:
             cached_result["price_per_sqft"] = float(property_price) / float(property_sqft)
         return MarketTrends(**cached_result)
@@ -748,11 +760,9 @@ async def get_market_trends(location: str, timeframe: str = "1y", property_price
         )
 
         # Cache result (cache city-level data, but price_per_sqft is property-specific)
-        # Create a base cache key for city-level data (without property-specific params)
-        base_cache_key = _get_cache_key("market_trends", location=location, timeframe=timeframe)
-        base_trends = trends.model_dump()
-        # Store base trends (with estimated price_per_sqft) in cache for city-level queries
-        _set_cache(base_cache_key, base_trends, ttl_seconds=3600)
+        # Use the same cache_location we extracted earlier for consistency
+        # Store base trends with estimated price_per_sqft (or actual if no property data provided)
+        _set_cache(cache_key, trends.model_dump(), ttl_seconds=3600)
 
         logger.info(f"Retrieved market trends for: {location}")
         return trends
