@@ -191,12 +191,13 @@ class ComparableSale(BaseModel):
 
 # MCP Tools
 @mcp.tool()
-async def get_neighborhood_stats(location: str) -> NeighborhoodStats:
+async def get_neighborhood_stats(location: str, zpid: Optional[str] = None) -> NeighborhoodStats:
     """
     Get demographics, crime, and walkability scores for a location.
 
     Args:
         location: City, state, or ZIP code
+        zpid: Optional Zillow Property ID for better data from /pro/byzpid endpoint
 
     Returns:
         NeighborhoodStats object with demographics, crime score, walkability, and overall score
@@ -217,8 +218,8 @@ async def get_neighborhood_stats(location: str) -> NeighborhoodStats:
     if not location or len(location.strip()) < 2:
         raise ValueError("Invalid location: must be at least 2 characters")
 
-    # Check cache (24 hour TTL for neighborhood data)
-    cache_key = _get_cache_key("neighborhood_stats", location=location)
+    # Check cache (24 hour TTL for neighborhood data) - include ZPID in cache key if provided
+    cache_key = _get_cache_key("neighborhood_stats", location=location, zpid=zpid or "none")
     cached_result = _get_cached(cache_key, ttl_seconds=86400)
     if cached_result:
         logger.info(f"Returning cached neighborhood stats for: {location}")
@@ -229,20 +230,54 @@ async def get_neighborhood_stats(location: str) -> NeighborhoodStats:
         if not settings.rapidapi_key or settings.rapidapi_key == "your_rapidapi_key_here":
             raise ValueError("RAPIDAPI_KEY not configured. Please set your RapidAPI key in .env file")
 
-        # Call Zillow API for neighborhood data
-        # Use property-details-address endpoint (works with real-time-zillow-data API)
-        url = f"{settings.zillow_api_base_url}/property-details-address"
-        params = {"address": location}
-
-        response_data = await _make_api_request(url, params)
+        response_data = None
+        
+        # If ZPID is available, use the new /pro/byzpid endpoint for rich data
+        if zpid:
+            try:
+                logger.info(f"Using /pro/byzpid endpoint with ZPID: {zpid}")
+                url = f"{settings.zillow_market_api_base_url}/pro/byzpid"
+                params = {"zpid": zpid}
+                response_data = await _make_api_request(url, params, use_market_api=True)
+                
+                # Parse rich property data from /pro/byzpid
+                property_details = response_data.get("propertyDetails", {})
+                parent_region = property_details.get("parentRegion", {})
+                neighborhood_name = parent_region.get("name", "")
+                
+                # Extract neighborhood info
+                # Note: /pro/byzpid doesn't have demographics, but we can get neighborhood name
+                demographics = {
+                    "population": 0,  # Not available in this endpoint
+                    "median_age": 0,
+                    "median_income": 0,
+                    "household_size": 0,
+                }
+                
+                # Try to get walkability/transit scores if available
+                walkability_score = 50.0  # Default
+                crime_score = 50.0  # Default
+                
+                # If we have neighborhood name, we can at least provide that context
+                if neighborhood_name:
+                    logger.info(f"Found neighborhood: {neighborhood_name}")
+                
+            except Exception as zpid_error:
+                logger.warning(f"Failed to use /pro/byzpid endpoint: {zpid_error}. Falling back to address-based lookup.")
+                response_data = None
+        
+        # Fallback to address-based endpoint if ZPID failed or not provided
+        if not response_data:
+            # Call Zillow API for neighborhood data
+            # Use property-details-address endpoint (works with real-time-zillow-data API)
+            url = f"{settings.zillow_api_base_url}/property-details-address"
+            params = {"address": location}
+            response_data = await _make_api_request(url, params)
 
         # Log response structure for debugging
         logger.info(f"API response keys for neighborhood stats: {list(response_data.keys())[:20]}")
-        logger.debug(f"Full API response structure (first 500 chars): {str(response_data)[:500]}")
 
-        # Extract neighborhood data from response
-        # Note: Actual API response structure may vary - this handles common patterns
-        # Try multiple possible response structures
+        # Extract neighborhood data from response - try multiple possible structures
         demographics_data = {}
         if "demographics" in response_data:
             demographics_data = response_data["demographics"] if isinstance(response_data["demographics"], dict) else {}
@@ -250,13 +285,22 @@ async def get_neighborhood_stats(location: str) -> NeighborhoodStats:
             demographics_data = response_data["data"].get("demographics", {})
         elif "property" in response_data and isinstance(response_data["property"], dict):
             demographics_data = response_data["property"].get("demographics", {})
+        elif "propertyDetails" in response_data:
+            # New endpoint structure
+            property_details = response_data.get("propertyDetails", {})
+            parent_region = property_details.get("parentRegion", {})
+            if parent_region:
+                # We have neighborhood name but not demographics
+                pass
 
-        demographics = {
-            "population": demographics_data.get("population") or demographics_data.get("populationCount") or 0,
-            "median_age": demographics_data.get("medianAge") or demographics_data.get("age") or 0,
-            "median_income": demographics_data.get("medianIncome") or demographics_data.get("income") or 0,
-            "household_size": demographics_data.get("householdSize") or demographics_data.get("household_size") or 0,
-        }
+        # Only update demographics if we found data
+        if demographics_data:
+            demographics = {
+                "population": demographics_data.get("population") or demographics_data.get("populationCount") or 0,
+                "median_age": demographics_data.get("medianAge") or demographics_data.get("age") or 0,
+                "median_income": demographics_data.get("medianIncome") or demographics_data.get("income") or 0,
+                "household_size": demographics_data.get("householdSize") or demographics_data.get("household_size") or 0,
+            }
 
         # Calculate scores from available data - try multiple locations
         crime_score = (
@@ -264,6 +308,7 @@ async def get_neighborhood_stats(location: str) -> NeighborhoodStats:
             or response_data.get("crime_score")
             or (response_data.get("data", {}).get("crimeScore") if isinstance(response_data.get("data"), dict) else None)
             or (response_data.get("property", {}).get("crimeScore") if isinstance(response_data.get("property"), dict) else None)
+            or (response_data.get("propertyDetails", {}).get("crimeScore") if isinstance(response_data.get("propertyDetails"), dict) else None)
             or 50.0
         )
         
@@ -273,6 +318,7 @@ async def get_neighborhood_stats(location: str) -> NeighborhoodStats:
             or response_data.get("walkability")
             or (response_data.get("data", {}).get("walkScore") if isinstance(response_data.get("data"), dict) else None)
             or (response_data.get("property", {}).get("walkScore") if isinstance(response_data.get("property"), dict) else None)
+            or (response_data.get("propertyDetails", {}).get("walkScore") if isinstance(response_data.get("propertyDetails"), dict) else None)
             or 50.0
         )
 
@@ -325,7 +371,7 @@ async def get_neighborhood_stats(location: str) -> NeighborhoodStats:
 
 
 @mcp.tool()
-async def get_school_ratings(location: str, radius: int = 5) -> List[SchoolRating]:
+async def get_school_ratings(location: str, radius: int = 5, zpid: Optional[str] = None) -> List[SchoolRating]:
     """
     Get school quality ratings for area.
 
@@ -355,8 +401,8 @@ async def get_school_ratings(location: str, radius: int = 5) -> List[SchoolRatin
     if radius < 1 or radius > 25:
         raise ValueError("Radius must be between 1 and 25 miles")
 
-    # Check cache (24 hour TTL for school data)
-    cache_key = _get_cache_key("school_ratings", location=location, radius=radius)
+    # Check cache (24 hour TTL for school data) - include ZPID in cache key if provided
+    cache_key = _get_cache_key("school_ratings", location=location, radius=radius, zpid=zpid or "none")
     cached_result = _get_cached(cache_key, ttl_seconds=86400)
     if cached_result:
         logger.info(f"Returning cached school ratings for: {location}")
@@ -367,76 +413,125 @@ async def get_school_ratings(location: str, radius: int = 5) -> List[SchoolRatin
         if not settings.rapidapi_key or settings.rapidapi_key == "your_rapidapi_key_here":
             raise ValueError("RAPIDAPI_KEY not configured. Please set your RapidAPI key in .env file")
 
-        # Call Zillow API for school data
-        # Use property-details-address endpoint (works with real-time-zillow-data API)
-        # School data should be in the property details response
-        url = f"{settings.zillow_api_base_url}/property-details-address"
-        params = {"address": location}
-
-        response_data = await _make_api_request(url, params)
-
-        # Extract school data from response - try multiple possible locations
-        # The API might return schools in different nested structures
+        response_data = None
         schools_list = []
         
-        # Try various possible keys and nested paths
-        if "schools" in response_data:
-            schools_list = response_data["schools"] if isinstance(response_data["schools"], list) else []
-        elif "nearbySchools" in response_data:
-            schools_list = response_data["nearbySchools"] if isinstance(response_data["nearbySchools"], list) else []
-        elif "data" in response_data and isinstance(response_data["data"], dict):
-            # Check if schools are nested under data
-            schools_list = response_data["data"].get("schools", []) or response_data["data"].get("nearbySchools", []) or []
-        elif "property" in response_data and isinstance(response_data["property"], dict):
-            # Check if schools are nested under property
-            schools_list = response_data["property"].get("schools", []) or response_data["property"].get("nearbySchools", []) or []
+        # If ZPID is available, use the new /pro/byzpid endpoint for rich school data
+        if zpid:
+            try:
+                logger.info(f"Using /pro/byzpid endpoint with ZPID: {zpid} for school ratings")
+                url = f"{settings.zillow_market_api_base_url}/pro/byzpid"
+                params = {"zpid": zpid}
+                response_data = await _make_api_request(url, params, use_market_api=True)
+                
+                # Parse school data from /pro/byzpid - schools are at propertyDetails.schools
+                property_details = response_data.get("propertyDetails", {})
+                schools_list = property_details.get("schools", [])
+                
+                if schools_list:
+                    logger.info(f"Found {len(schools_list)} schools from /pro/byzpid endpoint")
+                
+            except Exception as zpid_error:
+                logger.warning(f"Failed to use /pro/byzpid endpoint: {zpid_error}. Falling back to address-based lookup.")
+                response_data = None
         
-        # Log what we found for debugging
+        # Fallback to address-based endpoint if ZPID failed or not provided
         if not schools_list:
-            logger.info(f"No school data found in API response. Response keys: {list(response_data.keys())}")
-            # Log a sample of the response structure for debugging
-            if response_data:
-                sample_keys = list(response_data.keys())[:10]
-                logger.debug(f"Sample response structure - top-level keys: {sample_keys}")
-                # Try to find any list that might contain school data
-                for key, value in response_data.items():
-                    if isinstance(value, list) and len(value) > 0:
-                        logger.debug(f"Found list under key '{key}' with {len(value)} items. First item keys: {list(value[0].keys()) if isinstance(value[0], dict) else 'not a dict'}")
-                        # Check if items look like school data
-                        if isinstance(value[0], dict) and any(k in value[0] for k in ["name", "schoolName", "rating", "score", "type", "schoolType"]):
-                            logger.info(f"Found potential school data under key '{key}'")
-                            schools_list = value
-                            break
-                    elif isinstance(value, dict):
-                        # Recursively check nested dictionaries
-                        nested_keys = list(value.keys())[:10]
-                        logger.debug(f"Found nested dict under key '{key}' with keys: {nested_keys}")
-                        # Check if this dict has school-related keys
-                        if any(k in value for k in ["schools", "nearbySchools", "school"]):
-                            school_key = next((k for k in ["schools", "nearbySchools", "school"] if k in value), None)
-                            if school_key and isinstance(value[school_key], list):
-                                logger.info(f"Found school data under nested key '{key}.{school_key}'")
-                                schools_list = value[school_key]
+            # Call Zillow API for school data
+            # Use property-details-address endpoint (works with real-time-zillow-data API)
+            url = f"{settings.zillow_api_base_url}/property-details-address"
+            params = {"address": location}
+            response_data = await _make_api_request(url, params)
+
+            # Extract school data from response - try multiple possible locations
+            # The API might return schools in different nested structures
+            
+            # Try various possible keys and nested paths
+            if "schools" in response_data:
+                schools_list = response_data["schools"] if isinstance(response_data["schools"], list) else []
+            elif "nearbySchools" in response_data:
+                schools_list = response_data["nearbySchools"] if isinstance(response_data["nearbySchools"], list) else []
+            elif "data" in response_data and isinstance(response_data["data"], dict):
+                # Check if schools are nested under data
+                schools_list = response_data["data"].get("schools", []) or response_data["data"].get("nearbySchools", []) or []
+            elif "property" in response_data and isinstance(response_data["property"], dict):
+                # Check if schools are nested under property
+                schools_list = response_data["property"].get("schools", []) or response_data["property"].get("nearbySchools", []) or []
+            elif "propertyDetails" in response_data:
+                # New endpoint structure
+                property_details = response_data.get("propertyDetails", {})
+                schools_list = property_details.get("schools", [])
+            
+            # Log what we found for debugging
+            if not schools_list:
+                logger.info(f"No school data found in API response. Response keys: {list(response_data.keys())}")
+                # Log a sample of the response structure for debugging
+                if response_data:
+                    sample_keys = list(response_data.keys())[:10]
+                    logger.debug(f"Sample response structure - top-level keys: {sample_keys}")
+                    # Try to find any list that might contain school data
+                    for key, value in response_data.items():
+                        if isinstance(value, list) and len(value) > 0:
+                            logger.debug(f"Found list under key '{key}' with {len(value)} items. First item keys: {list(value[0].keys()) if isinstance(value[0], dict) else 'not a dict'}")
+                            # Check if items look like school data
+                            if isinstance(value[0], dict) and any(k in value[0] for k in ["name", "schoolName", "rating", "score", "type", "schoolType"]):
+                                logger.info(f"Found potential school data under key '{key}'")
+                                schools_list = value
                                 break
+                        elif isinstance(value, dict):
+                            # Recursively check nested dictionaries
+                            nested_keys = list(value.keys())[:10]
+                            logger.debug(f"Found nested dict under key '{key}' with keys: {nested_keys}")
+                            # Check if this dict has school-related keys
+                            if any(k in value for k in ["schools", "nearbySchools", "school"]):
+                                school_key = next((k for k in ["schools", "nearbySchools", "school"] if k in value), None)
+                                if school_key and isinstance(value[school_key], list):
+                                    logger.info(f"Found school data under nested key '{key}.{school_key}'")
+                                    schools_list = value[school_key]
+                                    break
 
         school_ratings = []
         for school_data in schools_list[:20]:  # Limit to 20 schools
             try:
                 # Handle different response formats
+                # /pro/byzpid uses: name, rating, level (Primary/Middle/High), distance, grades
                 school_name = school_data.get("name") or school_data.get("schoolName") or "Unknown"
-                school_type = (
-                    school_data.get("type")
-                    or school_data.get("schoolType")
-                    or school_data.get("level")
-                    or "elementary"
-                ).lower()
+                
+                # Map level to type - /pro/byzpid uses "level": "Primary", "Middle", "High"
+                level = school_data.get("level", "").lower()
+                if level in ["primary", "elementary"]:
+                    school_type = "elementary"
+                elif level in ["middle", "junior"]:
+                    school_type = "middle"
+                elif level in ["high", "senior"]:
+                    school_type = "high"
+                else:
+                    # Fallback to other fields
+                    school_type = (
+                        school_data.get("type")
+                        or school_data.get("schoolType")
+                        or "elementary"
+                    ).lower()
 
                 # Extract rating (0-10 scale expected)
+                # /pro/byzpid provides rating directly (e.g., 8 = 8/10)
                 rating = school_data.get("rating") or school_data.get("score") or 0
                 # Keep rating as-is (0-10 scale) since SchoolRating model accepts 0-10
-                # No conversion needed
+                rating = float(rating) if rating else 0.0
 
-                distance = school_data.get("distance") or school_data.get("distanceMiles") or 0
+                # Extract distance in miles
+                distance = (
+                    school_data.get("distance")
+                    or school_data.get("distanceMiles")
+                    or 0.0
+                )
+                distance = float(distance) if distance else 0.0
+                
+                # Extract grades (e.g., "PK-5")
+                grades = school_data.get("grades") or ""
+                
+                # Extract address if available
+                address = school_data.get("address") or ""
 
                 school_rating = SchoolRating(
                     name=school_name,
@@ -815,7 +910,7 @@ async def calculate_affordability(
 
 @mcp.tool()
 async def get_comparable_sales(
-    location: str, property_type: Optional[str] = None
+    location: str, property_type: Optional[str] = None, zpid: Optional[str] = None
 ) -> List[ComparableSale]:
     """
     Get recent comparable sales data.
@@ -823,6 +918,7 @@ async def get_comparable_sales(
     Args:
         location: City, state, or ZIP code
         property_type: Optional property type filter (house, condo, townhouse)
+        zpid: Optional Zillow Property ID for better data from /pro/byzpid endpoint
 
     Returns:
         List of ComparableSale objects
@@ -843,8 +939,8 @@ async def get_comparable_sales(
     if not location or len(location.strip()) < 2:
         raise ValueError("Invalid location: must be at least 2 characters")
 
-    # Check cache (1 hour TTL for comparable sales)
-    cache_key = _get_cache_key("comparable_sales", location=location, property_type=property_type or "all")
+    # Check cache (1 hour TTL for comparable sales) - include ZPID in cache key if provided
+    cache_key = _get_cache_key("comparable_sales", location=location, property_type=property_type or "all", zpid=zpid or "none")
     cached_result = _get_cached(cache_key, ttl_seconds=3600)
     if cached_result:
         logger.info(f"Returning cached comparable sales for: {location}")
@@ -855,56 +951,117 @@ async def get_comparable_sales(
         if not settings.rapidapi_key or settings.rapidapi_key == "your_rapidapi_key_here":
             raise ValueError("RAPIDAPI_KEY not configured. Please set your RapidAPI key in .env file")
 
-        # Call Zillow API for comparable sales
-        # Use property-details-address endpoint (works with real-time-zillow-data API)
-        url = f"{settings.zillow_api_base_url}/property-details-address"
-        params = {"address": location}
-
-        response_data = await _make_api_request(url, params)
-
-        # Log response structure for debugging
-        logger.info(f"API response keys for comparable sales: {list(response_data.keys())[:20]}")
-
-        # Extract comparable sales from response - try multiple possible locations
-        # Note: Actual API may have different structure for comparable sales
+        response_data = None
         comps_list = []
         
-        # Try top-level keys
-        if "comps" in response_data and isinstance(response_data["comps"], list):
-            comps_list = response_data["comps"]
-        elif "comparableSales" in response_data and isinstance(response_data["comparableSales"], list):
-            comps_list = response_data["comparableSales"]
-        elif "recentSales" in response_data and isinstance(response_data["recentSales"], list):
-            comps_list = response_data["recentSales"]
-        # Try nested under data.*
-        elif "data" in response_data and isinstance(response_data["data"], dict):
-            comps_list = (
-                response_data["data"].get("comps", [])
-                or response_data["data"].get("comparableSales", [])
-                or response_data["data"].get("recentSales", [])
-                or []
-            )
-        # Try nested under property.*
-        elif "property" in response_data and isinstance(response_data["property"], dict):
-            comps_list = (
-                response_data["property"].get("comps", [])
-                or response_data["property"].get("comparableSales", [])
-                or response_data["property"].get("recentSales", [])
-                or []
-            )
+        # If ZPID is available, use the new /pro/byzpid endpoint for comparable sales
+        if zpid:
+            try:
+                logger.info(f"Using /pro/byzpid endpoint with ZPID: {zpid} for comparable sales")
+                url = f"{settings.zillow_market_api_base_url}/pro/byzpid"
+                params = {"zpid": zpid}
+                response_data = await _make_api_request(url, params, use_market_api=True)
+                
+                # Parse comparable sales from /pro/byzpid
+                # Comparable homes are in: collections.modules[0].propertyDetails
+                collections = response_data.get("collections", {})
+                modules = collections.get("modules", [])
+                
+                # Find the "Similar homes" module
+                for module in modules:
+                    if module.get("name") == "Similar homes" and module.get("placement") == "NEIGHBORHOOD":
+                        property_details_list = module.get("propertyDetails", [])
+                        if property_details_list:
+                            logger.info(f"Found {len(property_details_list)} similar homes from /pro/byzpid")
+                            comps_list = property_details_list
+                            break
+                
+            except Exception as zpid_error:
+                logger.warning(f"Failed to use /pro/byzpid endpoint: {zpid_error}. Falling back to address-based lookup.")
+                response_data = None
+        
+        # Fallback to address-based endpoint if ZPID failed or not provided
+        if not comps_list:
+            # Call Zillow API for comparable sales
+            # Use property-details-address endpoint (works with real-time-zillow-data API)
+            url = f"{settings.zillow_api_base_url}/property-details-address"
+            params = {"address": location}
+            response_data = await _make_api_request(url, params)
+
+            # Log response structure for debugging
+            logger.info(f"API response keys for comparable sales: {list(response_data.keys())[:20]}")
+
+            # Extract comparable sales from response - try multiple possible locations
+            # Try top-level keys
+            if "comps" in response_data and isinstance(response_data["comps"], list):
+                comps_list = response_data["comps"]
+            elif "comparableSales" in response_data and isinstance(response_data["comparableSales"], list):
+                comps_list = response_data["comparableSales"]
+            elif "recentSales" in response_data and isinstance(response_data["recentSales"], list):
+                comps_list = response_data["recentSales"]
+            # Try nested under data.*
+            elif "data" in response_data and isinstance(response_data["data"], dict):
+                comps_list = (
+                    response_data["data"].get("comps", [])
+                    or response_data["data"].get("comparableSales", [])
+                    or response_data["data"].get("recentSales", [])
+                    or []
+                )
+            # Try nested under property.*
+            elif "property" in response_data and isinstance(response_data["property"], dict):
+                comps_list = (
+                    response_data["property"].get("comps", [])
+                    or response_data["property"].get("comparableSales", [])
+                    or response_data["property"].get("recentSales", [])
+                    or []
+                )
 
         comparable_sales = []
         for comp_data in comps_list[:20]:  # Limit to 20 comparable sales
             try:
                 # Handle different response formats
-                address = comp_data.get("address") or comp_data.get("streetAddress") or "Address not available"
+                # /pro/byzpid format: address.streetAddress, price, bedrooms, bathrooms, livingArea, etc.
+                address_obj = comp_data.get("address", {})
+                if isinstance(address_obj, dict):
+                    # /pro/byzpid format
+                    street = address_obj.get("streetAddress", "")
+                    city = address_obj.get("city", "")
+                    state = address_obj.get("state", "")
+                    zipcode = address_obj.get("zipcode", "")
+                    address = f"{street}, {city}, {state} {zipcode}".strip()
+                else:
+                    # Fallback format
+                    address = comp_data.get("address") or comp_data.get("streetAddress") or "Address not available"
+                
                 sale_price = comp_data.get("price") or comp_data.get("salePrice") or 0
-                sale_date = comp_data.get("saleDate") or comp_data.get("date") or ""
-                square_feet = comp_data.get("squareFeet") or comp_data.get("sqft") or comp_data.get("livingArea") or 0
+                
+                # /pro/byzpid doesn't have sale_date, but we can use price history if available
+                sale_date = comp_data.get("saleDate") or comp_data.get("date") or comp_data.get("lastSoldDate") or ""
+                
+                # /pro/byzpid uses livingArea or livingAreaValue
+                square_feet = (
+                    comp_data.get("livingAreaValue")
+                    or comp_data.get("livingArea")
+                    or comp_data.get("squareFeet")
+                    or comp_data.get("sqft")
+                    or 0
+                )
                 bedrooms = comp_data.get("bedrooms") or comp_data.get("beds") or 0
                 bathrooms = comp_data.get("bathrooms") or comp_data.get("baths") or 0
-                comp_property_type = (comp_data.get("propertyType") or comp_data.get("type") or "house").lower()
-                distance = comp_data.get("distance") or comp_data.get("distanceMiles") or 0
+                
+                # /pro/byzpid uses homeType (e.g., "SINGLE_FAMILY")
+                home_type = comp_data.get("homeType", "").upper()
+                if home_type == "SINGLE_FAMILY":
+                    comp_property_type = "house"
+                elif home_type == "CONDO":
+                    comp_property_type = "condo"
+                elif home_type == "TOWNHOUSE":
+                    comp_property_type = "townhouse"
+                else:
+                    comp_property_type = (comp_data.get("propertyType") or comp_data.get("type") or "house").lower()
+                
+                # Distance not available in /pro/byzpid similar homes, use 0
+                distance = comp_data.get("distance") or comp_data.get("distanceMiles") or 0.0
 
                 # Filter by property type if specified
                 if property_type and comp_property_type != property_type.lower():

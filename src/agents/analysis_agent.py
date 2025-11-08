@@ -100,9 +100,17 @@ class AnalysisAgent(BaseAgent):
             location = f"{property_data.get('city')}, {property_data.get('state')}"
             self.logger.warning(f"Property address not available, using city/state: {location}")
 
+        # Extract ZPID from property data if available (for better API endpoints)
+        zpid = property_data.get("id") or property_data.get("zpid")
+        # Clean ZPID (remove "prop_" prefix if present)
+        if zpid and isinstance(zpid, str) and zpid.startswith("prop_"):
+            zpid = None  # Not a real ZPID
+        elif zpid:
+            zpid = str(zpid)
+
         try:
-            # Get neighborhood stats using full address
-            neighborhood = await get_neighborhood_stats(location)
+            # Get neighborhood stats - use ZPID if available for better data
+            neighborhood = await get_neighborhood_stats(location, zpid=zpid)
             analysis["neighborhood"] = neighborhood.model_dump()
 
         except Exception as e:
@@ -110,8 +118,8 @@ class AnalysisAgent(BaseAgent):
             analysis["neighborhood"] = None
 
         try:
-            # Get school ratings using full address
-            schools = await get_school_ratings(location, radius=5)
+            # Get school ratings - use ZPID if available for better data
+            schools = await get_school_ratings(location, radius=5, zpid=zpid)
             analysis["schools"] = [s.model_dump() for s in schools]
 
         except Exception as e:
@@ -119,13 +127,23 @@ class AnalysisAgent(BaseAgent):
             analysis["schools"] = []
 
         try:
-            # Get market trends using full address
+            # Get market trends using full address (housing_market endpoint uses city/state)
             trends = await get_market_trends(location)
             analysis["market_trends"] = trends.model_dump()
 
         except Exception as e:
             self.logger.warning(f"Failed to get market trends: {e}")
             analysis["market_trends"] = None
+        
+        try:
+            # Get comparable sales - use ZPID if available for better data
+            from src.mcp_servers.market_analysis_server import get_comparable_sales
+            comparable_sales = await get_comparable_sales(location, property_type=property_data.get("property_type"), zpid=zpid)
+            analysis["comparable_sales"] = [s.model_dump() for s in comparable_sales]
+
+        except Exception as e:
+            self.logger.warning(f"Failed to get comparable sales: {e}")
+            analysis["comparable_sales"] = []
 
         # Calculate affordability if income provided
         user_prefs = state.search_criteria or {}
