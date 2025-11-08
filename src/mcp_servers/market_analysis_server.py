@@ -583,9 +583,14 @@ async def get_market_trends(location: str, timeframe: str = "1y", property_price
     Args:
         location: City, state, or ZIP code
         timeframe: Timeframe for trends - "1m", "3m", "6m", or "1y" (default: "1y")
+        property_price: Optional property price for accurate price_per_sqft calculation
+        property_sqft: Optional property square footage for accurate price_per_sqft calculation
 
     Returns:
-        MarketTrends object with price trends and market velocity
+        MarketTrends object with price trends and market velocity.
+        Note: Market trends (median_price, price_change_percent, etc.) are city-level and
+        will be the same for all properties in the same city. Only price_per_sqft is
+        property-specific when property_price and property_sqft are provided.
 
     Raises:
         ValueError: If location is invalid or timeframe is invalid
@@ -597,6 +602,10 @@ async def get_market_trends(location: str, timeframe: str = "1y", property_price
         5.2
         >>> trends.sales_velocity
         45.3
+        >>> # With property-specific data for accurate price_per_sqft
+        >>> trends = await get_market_trends("123 Main St, Austin, TX", property_price=500000, property_sqft=2000)
+        >>> trends.price_per_sqft
+        250.0
     """
     logger.info(f"Getting market trends for: {location} (timeframe: {timeframe})")
 
@@ -738,8 +747,12 @@ async def get_market_trends(location: str, timeframe: str = "1y", property_price
             trend_direction=trend_direction,
         )
 
-        # Cache result
-        _set_cache(cache_key, trends.model_dump(), ttl_seconds=3600)
+        # Cache result (cache city-level data, but price_per_sqft is property-specific)
+        # Create a base cache key for city-level data (without property-specific params)
+        base_cache_key = _get_cache_key("market_trends", location=location, timeframe=timeframe)
+        base_trends = trends.model_dump()
+        # Store base trends (with estimated price_per_sqft) in cache for city-level queries
+        _set_cache(base_cache_key, base_trends, ttl_seconds=3600)
 
         logger.info(f"Retrieved market trends for: {location}")
         return trends
@@ -974,18 +987,65 @@ async def get_comparable_sales(
                 response_data = await _make_api_request(url, params, use_market_api=True)
                 
                 # Parse comparable sales from /pro/byzpid
-                # Comparable homes are in: collections.modules[0].propertyDetails
-                collections = response_data.get("collections", {})
-                modules = collections.get("modules", [])
+                # Based on user's example: collections.modules[].propertyDetails where name="Similar homes"
+                # First, check propertyDetails.collections structure
+                property_details = response_data.get("propertyDetails", {})
+                if isinstance(property_details, dict):
+                    # Check if collections is nested under propertyDetails
+                    collections = property_details.get("collections", {})
+                else:
+                    collections = {}
                 
-                # Find the "Similar homes" module
-                for module in modules:
-                    if module.get("name") == "Similar homes" and module.get("placement") == "NEIGHBORHOOD":
+                # If not found, try top-level collections
+                if not collections or not isinstance(collections, dict):
+                    collections = response_data.get("collections", {})
+                
+                modules = collections.get("modules", []) if isinstance(collections, dict) else []
+                
+                # Log structure for debugging
+                logger.info(f"Checking for comparable sales - collections type: {type(collections)}, modules count: {len(modules)}")
+                
+                # Find the "Similar homes" module - try different matching strategies
+                for idx, module in enumerate(modules):
+                    if not isinstance(module, dict):
+                        continue
+                    
+                    module_name = module.get("name", "")
+                    placement = module.get("placement", "")
+                    logger.debug(f"Module {idx}: name='{module_name}', placement='{placement}', keys={list(module.keys())[:10]}")
+                    
+                    # Check for similar homes - be flexible with name matching
+                    if "similar" in module_name.lower() or "comparable" in module_name.lower():
                         property_details_list = module.get("propertyDetails", [])
-                        if property_details_list:
-                            logger.info(f"Found {len(property_details_list)} similar homes from /pro/byzpid")
+                        if property_details_list and isinstance(property_details_list, list) and len(property_details_list) > 0:
+                            logger.info(f"Found {len(property_details_list)} similar homes from /pro/byzpid in module '{module_name}'")
                             comps_list = property_details_list
                             break
+                    
+                    # Also check if propertyDetails exists and looks like property data
+                    if "propertyDetails" in module:
+                        property_details_list = module.get("propertyDetails", [])
+                        if property_details_list and isinstance(property_details_list, list) and len(property_details_list) > 0:
+                            # Verify first item looks like a property
+                            first_item = property_details_list[0]
+                            if isinstance(first_item, dict):
+                                # Check for property-like keys
+                                if any(k in first_item for k in ["price", "address", "bedrooms", "zpid", "livingArea"]):
+                                    logger.info(f"Found {len(property_details_list)} properties in module '{module_name}' (assuming comparables)")
+                                    comps_list = property_details_list
+                                    break
+                
+                # If still no comps, try checking all top-level keys for property arrays
+                if not comps_list:
+                    logger.warning(f"No comparable sales found in modules. Checking alternative structures...")
+                    # Check if there's a nearbyHomes or similar key
+                    for key in ["nearbyHomes", "similarHomes", "comparableHomes", "recentSales"]:
+                        if key in response_data:
+                            candidate_list = response_data[key]
+                            if isinstance(candidate_list, list) and len(candidate_list) > 0:
+                                logger.info(f"Found {len(candidate_list)} properties in '{key}' (using as comparables)")
+                                comps_list = candidate_list
+                                break
                 
             except Exception as zpid_error:
                 logger.warning(f"Failed to use /pro/byzpid endpoint: {zpid_error}. Falling back to address-based lookup.")
