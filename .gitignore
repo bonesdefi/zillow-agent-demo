@@ -31,3 +31,7 @@ Thumbs.db
 # Docker
 *.log
 
+# Images (keep docs/images/ in repo)
+# !docs/images/*.png
+# !docs/images/*.jpg
+

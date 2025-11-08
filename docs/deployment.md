@@ -1,5 +1,11 @@
 # Deployment Guide
 
+## Overview
+
+The Real Estate AI Assistant can be deployed locally or in a containerized environment. The Streamlit UI provides an intuitive interface for interacting with the multi-agent system.
+
+![Streamlit UI](images/streamlit-ui-screenshot.png)
+
 ## Prerequisites
 
 - Python 3.11+

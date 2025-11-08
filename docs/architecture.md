@@ -4,6 +4,10 @@
 
 The Real Estate AI Assistant is a multi-agent system that uses LangGraph for orchestration and custom MCP (Model Context Protocol) servers for data access. The system is designed to help users find and analyze real estate properties through natural language conversation.
 
+![Real Estate AI Assistant UI](images/streamlit-ui-screenshot.png)
+
+*The Streamlit UI provides a conversational interface with property search results, detailed AI analysis, school ratings, and market trends for each property.*
+
 ## Component Diagram
 
 ```mermaid

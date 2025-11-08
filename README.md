@@ -4,6 +4,10 @@ A production-quality multi-agent AI system using LangGraph orchestration with cu
 
 **Inspired by Zillow's Agentic AI initiative - built with production-grade architecture and best practices.**
 
+![Real Estate AI Assistant UI](docs/images/streamlit-ui-screenshot.png)
+
+*Streamlit UI showing property search results with AI analysis, school information, and market trends*
+
 ## 🎯 Project Overview
 
 This project showcases advanced AI system architecture including:
@@ -78,6 +82,24 @@ cp .env.example .env
 ```bash
 streamlit run src/ui/streamlit_app.py
 ```
+
+The application will open in your browser at `http://localhost:8501`
+
+### UI Features
+
+The Streamlit interface provides a comprehensive real estate search experience:
+
+- **💬 Chat Interface**: Natural language conversation with the AI assistant
+- **🤖 Agent Activity Sidebar**: Real-time monitoring of agent coordination and MCP server calls
+- **🏘️ Property Cards**: Beautiful cards displaying property images, details, and key metrics
+- **📊 AI Analysis**: Expandable sections showing:
+  - Pros and cons analysis
+  - Neighborhood statistics and demographics
+  - School ratings with distances
+  - Market trends and price history
+  - Comparable sales data
+- **🔍 Search Criteria Display**: Transparent view of extracted search parameters
+- **📝 Conversation History**: Persistent chat history across sessions
 
 ### Docker Deployment
 
