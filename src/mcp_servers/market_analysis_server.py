@@ -90,7 +90,15 @@ async def _make_api_request(
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(url, headers=headers, params=params)
                 response.raise_for_status()
-                return response.json()
+                response_json = response.json()
+                
+                # Log response structure for debugging (first call only to avoid spam)
+                if not hasattr(_make_api_request, "_logged_once"):
+                    logger.info(f"API response sample - keys: {list(response_json.keys())[:20] if isinstance(response_json, dict) else 'not a dict'}")
+                    logger.debug(f"API response sample (first 1000 chars): {str(response_json)[:1000]}")
+                    _make_api_request._logged_once = True
+                
+                return response_json
 
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
@@ -222,20 +230,45 @@ async def get_neighborhood_stats(location: str) -> NeighborhoodStats:
 
         response_data = await _make_api_request(url, params)
 
+        # Log response structure for debugging
+        logger.info(f"API response keys for neighborhood stats: {list(response_data.keys())[:20]}")
+        logger.debug(f"Full API response structure (first 500 chars): {str(response_data)[:500]}")
+
         # Extract neighborhood data from response
         # Note: Actual API response structure may vary - this handles common patterns
+        # Try multiple possible response structures
+        demographics_data = {}
+        if "demographics" in response_data:
+            demographics_data = response_data["demographics"] if isinstance(response_data["demographics"], dict) else {}
+        elif "data" in response_data and isinstance(response_data["data"], dict):
+            demographics_data = response_data["data"].get("demographics", {})
+        elif "property" in response_data and isinstance(response_data["property"], dict):
+            demographics_data = response_data["property"].get("demographics", {})
+
         demographics = {
-            "population": response_data.get("demographics", {}).get("population") or 0,
-            "median_age": response_data.get("demographics", {}).get("medianAge") or 0,
-            "median_income": response_data.get("demographics", {}).get("medianIncome") or 0,
-            "household_size": response_data.get("demographics", {}).get("householdSize") or 0,
+            "population": demographics_data.get("population") or demographics_data.get("populationCount") or 0,
+            "median_age": demographics_data.get("medianAge") or demographics_data.get("age") or 0,
+            "median_income": demographics_data.get("medianIncome") or demographics_data.get("income") or 0,
+            "household_size": demographics_data.get("householdSize") or demographics_data.get("household_size") or 0,
         }
 
-        # Calculate scores from available data
-        # Scores are extracted from Zillow API response, with fallback to neutral values
-        # In production deployments, these could be enhanced with specialized APIs
-        crime_score = response_data.get("crimeScore") or 50.0  # Default neutral score
-        walkability_score = response_data.get("walkScore") or response_data.get("walkability") or 50.0
+        # Calculate scores from available data - try multiple locations
+        crime_score = (
+            response_data.get("crimeScore") 
+            or response_data.get("crime_score")
+            or (response_data.get("data", {}).get("crimeScore") if isinstance(response_data.get("data"), dict) else None)
+            or (response_data.get("property", {}).get("crimeScore") if isinstance(response_data.get("property"), dict) else None)
+            or 50.0
+        )
+        
+        walkability_score = (
+            response_data.get("walkScore")
+            or response_data.get("walk_score")
+            or response_data.get("walkability")
+            or (response_data.get("data", {}).get("walkScore") if isinstance(response_data.get("data"), dict) else None)
+            or (response_data.get("property", {}).get("walkScore") if isinstance(response_data.get("property"), dict) else None)
+            or 50.0
+        )
 
         # Calculate overall score (weighted average)
         overall_score = (crime_score * 0.4 + walkability_score * 0.6)
@@ -489,15 +522,51 @@ async def get_market_trends(location: str, timeframe: str = "1y") -> MarketTrend
 
         response_data = await _make_api_request(url, params)
 
-        # Extract market data from response
-        median_price = response_data.get("price") or response_data.get("medianPrice") or 0
-        price_per_sqft = response_data.get("pricePerSqft") or response_data.get("pricePerSquareFoot") or 0
+        # Log response structure for debugging
+        logger.info(f"API response keys for market trends: {list(response_data.keys())[:20]}")
+
+        # Extract market data from response - try multiple possible locations
+        # Check top level, data.*, property.*
+        median_price = (
+            response_data.get("price")
+            or response_data.get("medianPrice")
+            or response_data.get("zestimate")
+            or (response_data.get("data", {}).get("price") if isinstance(response_data.get("data"), dict) else None)
+            or (response_data.get("property", {}).get("price") if isinstance(response_data.get("property"), dict) else None)
+            or 0
+        )
+        
+        price_per_sqft = (
+            response_data.get("pricePerSqft")
+            or response_data.get("pricePerSquareFoot")
+            or response_data.get("price_per_sqft")
+            or (response_data.get("data", {}).get("pricePerSqft") if isinstance(response_data.get("data"), dict) else None)
+            or 0
+        )
 
         # Calculate trends from API response data
         # Trends are calculated from available Zillow API data
-        price_change_percent = response_data.get("priceChangePercent") or 0
-        days_on_market = response_data.get("daysOnMarket") or response_data.get("daysOnZillow") or 30
-        inventory_count = response_data.get("inventoryCount") or 0
+        price_change_percent = (
+            response_data.get("priceChangePercent")
+            or response_data.get("price_change_percent")
+            or (response_data.get("data", {}).get("priceChangePercent") if isinstance(response_data.get("data"), dict) else None)
+            or 0
+        )
+        
+        days_on_market = (
+            response_data.get("daysOnMarket")
+            or response_data.get("daysOnZillow")
+            or response_data.get("days_on_market")
+            or (response_data.get("data", {}).get("daysOnMarket") if isinstance(response_data.get("data"), dict) else None)
+            or 30
+        )
+        
+        inventory_count = (
+            response_data.get("inventoryCount")
+            or response_data.get("inventory_count")
+            or (response_data.get("data", {}).get("inventoryCount") if isinstance(response_data.get("data"), dict) else None)
+            or 0
+        )
 
         # Calculate sales velocity (properties sold per month)
         # This is an estimate based on available data
@@ -727,9 +796,36 @@ async def get_comparable_sales(
 
         response_data = await _make_api_request(url, params)
 
-        # Extract comparable sales from response
+        # Log response structure for debugging
+        logger.info(f"API response keys for comparable sales: {list(response_data.keys())[:20]}")
+
+        # Extract comparable sales from response - try multiple possible locations
         # Note: Actual API may have different structure for comparable sales
-        comps_list = response_data.get("comps") or response_data.get("comparableSales") or response_data.get("recentSales", []) or []
+        comps_list = []
+        
+        # Try top-level keys
+        if "comps" in response_data and isinstance(response_data["comps"], list):
+            comps_list = response_data["comps"]
+        elif "comparableSales" in response_data and isinstance(response_data["comparableSales"], list):
+            comps_list = response_data["comparableSales"]
+        elif "recentSales" in response_data and isinstance(response_data["recentSales"], list):
+            comps_list = response_data["recentSales"]
+        # Try nested under data.*
+        elif "data" in response_data and isinstance(response_data["data"], dict):
+            comps_list = (
+                response_data["data"].get("comps", [])
+                or response_data["data"].get("comparableSales", [])
+                or response_data["data"].get("recentSales", [])
+                or []
+            )
+        # Try nested under property.*
+        elif "property" in response_data and isinstance(response_data["property"], dict):
+            comps_list = (
+                response_data["property"].get("comps", [])
+                or response_data["property"].get("comparableSales", [])
+                or response_data["property"].get("recentSales", [])
+                or []
+            )
 
         comparable_sales = []
         for comp_data in comps_list[:20]:  # Limit to 20 comparable sales

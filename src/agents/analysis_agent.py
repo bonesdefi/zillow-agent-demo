@@ -175,16 +175,41 @@ Focus on: location, price, schools, market trends, neighborhood quality.
 
 Return ONLY the JSON object, nothing else."""
 
+        # Build user message with available data
+        neighborhood_info = "Available" if analysis.get('neighborhood') else "Not available"
+        schools_info = f"{len(analysis.get('schools', []))} schools found" if analysis.get('schools') else "No school data available"
+        trends_info = "Available" if analysis.get('market_trends') else "Not available"
+        
+        # Extract useful info from neighborhood stats if available
+        neighborhood_details = ""
+        if analysis.get('neighborhood') and isinstance(analysis.get('neighborhood'), dict):
+            nb = analysis['neighborhood']
+            if nb.get('demographics'):
+                demo = nb['demographics']
+                neighborhood_details = f"Demographics: Population {demo.get('population', 'N/A')}, Median Income ${demo.get('median_income', 0):,}"
+            if nb.get('overall_score'):
+                neighborhood_details += f", Overall Score: {nb['overall_score']:.1f}/100"
+        
+        # Extract useful info from market trends if available
+        trends_details = ""
+        if analysis.get('market_trends') and isinstance(analysis.get('market_trends'), dict):
+            mt = analysis['market_trends']
+            trends_details = f"Market: {mt.get('trend_direction', 'N/A')} trend, Median Price ${mt.get('median_price', 0):,}, Price Change {mt.get('price_change_percent', 0):.1f}%"
+        
         user_message = f"""
 Property: {property_data.get('address')}
 Price: ${property_data.get('price', 0):,}
 Bedrooms: {property_data.get('bedrooms')}
 Bathrooms: {property_data.get('bathrooms')}
+Square Feet: {property_data.get('square_feet', 'N/A')}
+Property Type: {property_data.get('property_type', 'N/A')}
 
-Analysis:
-- Neighborhood: {analysis.get('neighborhood')}
-- Schools: {len(analysis.get('schools', []))} nearby
-- Market Trends: {analysis.get('market_trends')}
+Analysis Data Available:
+- Neighborhood: {neighborhood_info} {neighborhood_details}
+- Schools: {schools_info}
+- Market Trends: {trends_info} {trends_details}
+
+Generate a comprehensive analysis focusing on what data IS available. If market data is limited, focus on property value, size, location, and general market context.
 """
 
         try:
@@ -223,25 +248,49 @@ Analysis:
 
         except json.JSONDecodeError as e:
             self.logger.error(f"Failed to parse JSON from LLM response: {e}. Response: {response[:200]}")
-            # Return a structured fallback with available analysis data
+            # Return a structured fallback with intelligent analysis based on available data
             pros = []
             cons = []
-            overall = "Analysis completed but summary generation failed."
             
-            # Try to extract some useful information from the analysis
-            if analysis.get("neighborhood"):
-                pros.append("Neighborhood data available")
-            if analysis.get("market_trends"):
-                pros.append("Market trends analyzed")
+            # Generate pros from property data
+            price = property_data.get('price', 0)
+            sqft = property_data.get('square_feet', 0)
+            bedrooms = property_data.get('bedrooms', 0)
+            bathrooms = property_data.get('bathrooms', 0)
+            
+            if price > 0:
+                price_per_sqft = price / sqft if sqft > 0 else 0
+                if price_per_sqft > 0:
+                    pros.append(f"Price per sqft: ${price_per_sqft:,.0f} - {'Good value' if price_per_sqft < 200 else 'Premium pricing'}")
+                pros.append(f"Listed at ${price:,}")
+            
+            if sqft > 0:
+                pros.append(f"{sqft:,} sqft - {'Spacious' if sqft > 2000 else 'Compact' if sqft < 1500 else 'Average size'}")
+            
+            if bedrooms >= 3:
+                pros.append(f"{bedrooms} bedrooms - Good for families")
+            
+            if bathrooms >= 2:
+                pros.append(f"{bathrooms} bathrooms - Convenient")
+            
+            # Generate cons based on missing data
+            if not analysis.get("neighborhood"):
+                cons.append("Neighborhood demographics and safety data unavailable")
             if len(analysis.get("schools", [])) == 0:
-                cons.append("School information unavailable")
-            if not analysis.get("neighborhood") or not analysis.get("market_trends"):
-                cons.append("Some analysis data incomplete")
+                cons.append("School ratings and information unavailable")
+            if not analysis.get("market_trends"):
+                cons.append("Market trends and price history unavailable")
+            
+            # Overall assessment
+            if len(pros) > len(cons):
+                overall = f"Property appears to be a solid option with {bedrooms} bedrooms and {sqft:,} sqft. Limited market analysis data available, but property fundamentals look good."
+            else:
+                overall = f"Property available at ${price:,}. Market analysis data is limited, so additional research is recommended before making a decision."
             
             if not pros:
-                pros.append("Property available")
+                pros.append("Property matches search criteria")
             if not cons:
-                cons.append("Limited analysis data")
+                cons.append("Additional market data would be helpful")
                 
             return {
                 "pros": pros,
