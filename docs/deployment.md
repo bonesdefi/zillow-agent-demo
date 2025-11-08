@@ -36,6 +36,8 @@ pip install -e ".[dev]"
 
 ## Configuration
 
+### Local Development
+
 1. Copy environment template:
 ```bash
 cp .env.example .env
@@ -46,6 +48,28 @@ cp .env.example .env
 ANTHROPIC_API_KEY=your_actual_key_here
 RAPIDAPI_KEY=your_actual_key_here
 ```
+
+### Streamlit Cloud Deployment
+
+**Important**: Streamlit Cloud does **not** read `.env` files. You must configure secrets in the Streamlit Cloud dashboard.
+
+1. Go to your app on [Streamlit Cloud](https://share.streamlit.io)
+2. Click on **Settings** (⚙️) → **Secrets**
+3. Add the following secrets:
+
+```toml
+ANTHROPIC_API_KEY = "your_anthropic_api_key_here"
+ANTHROPIC_MODEL = "claude-3-haiku-20240307"
+RAPIDAPI_KEY = "your_rapidapi_key_here"
+ZILLOW_API_BASE_URL = "https://real-time-zillow-data.p.rapidapi.com"
+ZILLOW_API_HOST = "real-time-zillow-data.p.rapidapi.com"
+ZILLOW_MARKET_API_BASE_URL = "https://zillow-working-api.p.rapidapi.com"
+ZILLOW_MARKET_API_HOST = "zillow-working-api.p.rapidapi.com"
+```
+
+4. Save and restart your app
+
+**Note**: The application automatically checks Streamlit secrets first, then falls back to environment variables, making it compatible with both local development and Streamlit Cloud deployment.
 
 ## Local Development
 

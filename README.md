@@ -82,6 +82,15 @@ cp .env.example .env
 
 **Note**: This project uses **real API integrations** - mock data is not used. You must configure valid API keys to use the system.
 
+### Streamlit Cloud Deployment
+
+For deployment on Streamlit Cloud, configure secrets in the dashboard:
+1. Go to your app settings → **Secrets**
+2. Add your API keys (see `.streamlit/secrets.toml.example` for format)
+3. The app automatically uses Streamlit secrets when deployed
+
+**Live Demo**: [https://zillow-agent-demo.streamlit.app/](https://zillow-agent-demo.streamlit.app/)
+
 5. Run the application:
 ```bash
 streamlit run src/ui/streamlit_app.py
