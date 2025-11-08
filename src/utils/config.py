@@ -21,10 +21,10 @@ class Settings(BaseSettings):
     # Real Estate Data API
     rapidapi_key: str = os.getenv("RAPIDAPI_KEY", "")
     zillow_api_base_url: str = os.getenv(
-        "ZILLOW_API_BASE_URL", "https://zillow-working-api.p.rapidapi.com"
+        "ZILLOW_API_BASE_URL", "https://real-time-zillow-data.p.rapidapi.com"
     )
     zillow_api_host: str = os.getenv(
-        "ZILLOW_API_HOST", "zillow-working-api.p.rapidapi.com"
+        "ZILLOW_API_HOST", "real-time-zillow-data.p.rapidapi.com"
     )
 
     # MCP Server Configuration

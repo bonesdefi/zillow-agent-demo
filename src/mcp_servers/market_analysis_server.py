@@ -226,9 +226,8 @@ async def get_neighborhood_stats(location: str) -> NeighborhoodStats:
             raise ValueError("RAPIDAPI_KEY not configured. Please set your RapidAPI key in .env file")
 
         # Call Zillow API for neighborhood data
-        # Use the new API endpoint: /By Property Address (Property Info - Advanced)
-        endpoint = quote("By Property Address", safe="")
-        url = f"{settings.zillow_api_base_url}/{endpoint}"
+        # Use property-details-address endpoint (works with real-time-zillow-data API)
+        url = f"{settings.zillow_api_base_url}/property-details-address"
         params = {"address": location}
 
         response_data = await _make_api_request(url, params)
@@ -365,10 +364,9 @@ async def get_school_ratings(location: str, radius: int = 5) -> List[SchoolRatin
             raise ValueError("RAPIDAPI_KEY not configured. Please set your RapidAPI key in .env file")
 
         # Call Zillow API for school data
-        # Use the new API endpoint: /By Property Address (Property Info - Advanced)
+        # Use property-details-address endpoint (works with real-time-zillow-data API)
         # School data should be in the property details response
-        endpoint = quote("By Property Address", safe="")
-        url = f"{settings.zillow_api_base_url}/{endpoint}"
+        url = f"{settings.zillow_api_base_url}/property-details-address"
         params = {"address": location}
 
         response_data = await _make_api_request(url, params)
@@ -523,28 +521,11 @@ async def get_market_trends(location: str, timeframe: str = "1y") -> MarketTrend
             raise ValueError("RAPIDAPI_KEY not configured. Please set your RapidAPI key in .env file")
 
         # Call Zillow API for market data
-        # Use the housing_market endpoint for market trends
-        # First get property details to extract location/ZIP for market data
-        endpoint = quote("By Property Address", safe="")
-        url = f"{settings.zillow_api_base_url}/{endpoint}"
+        # Use property-details-address endpoint (works with real-time-zillow-data API)
+        url = f"{settings.zillow_api_base_url}/property-details-address"
         params = {"address": location}
         
-        # Get property details first to extract location info
-        property_response = await _make_api_request(url, params)
-        
-        # Extract ZIP code or location for market data
-        zip_code = (
-            property_response.get("zipcode")
-            or property_response.get("zipCode")
-            or (property_response.get("address", {}).get("zipcode") if isinstance(property_response.get("address"), dict) else None)
-            or location.split(",")[-1].strip() if "," in location else None
-        )
-        
-        # Now get market trends using housing_market endpoint
-        market_url = f"{settings.zillow_api_base_url}/housing_market"
-        market_params = {"zip": zip_code} if zip_code else {"address": location}
-        
-        response_data = await _make_api_request(market_url, market_params)
+        response_data = await _make_api_request(url, params)
 
         # Log response structure for debugging
         logger.info(f"API response keys for market trends: {list(response_data.keys())[:20]}")
@@ -815,8 +796,8 @@ async def get_comparable_sales(
             raise ValueError("RAPIDAPI_KEY not configured. Please set your RapidAPI key in .env file")
 
         # Call Zillow API for comparable sales
-        # Use the comparable_homes endpoint
-        url = f"{settings.zillow_api_base_url}/comparable_homes"
+        # Use property-details-address endpoint (works with real-time-zillow-data API)
+        url = f"{settings.zillow_api_base_url}/property-details-address"
         params = {"address": location}
 
         response_data = await _make_api_request(url, params)
