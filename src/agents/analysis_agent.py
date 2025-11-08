@@ -90,10 +90,18 @@ class AnalysisAgent(BaseAgent):
             "address": property_data.get("address"),
         }
 
-        location = f"{property_data.get('city')}, {property_data.get('state')}"
+        # Use full property address for API calls (endpoint requires specific address, not city/state)
+        # Fallback to city, state if address not available
+        property_address = property_data.get("address", "")
+        if property_address:
+            location = property_address
+        else:
+            # Fallback to city, state if address not available
+            location = f"{property_data.get('city')}, {property_data.get('state')}"
+            self.logger.warning(f"Property address not available, using city/state: {location}")
 
         try:
-            # Get neighborhood stats
+            # Get neighborhood stats using full address
             neighborhood = await get_neighborhood_stats(location)
             analysis["neighborhood"] = neighborhood.model_dump()
 
@@ -102,7 +110,7 @@ class AnalysisAgent(BaseAgent):
             analysis["neighborhood"] = None
 
         try:
-            # Get school ratings
+            # Get school ratings using full address
             schools = await get_school_ratings(location, radius=5)
             analysis["schools"] = [s.model_dump() for s in schools]
 
@@ -111,7 +119,7 @@ class AnalysisAgent(BaseAgent):
             analysis["schools"] = []
 
         try:
-            # Get market trends
+            # Get market trends using full address
             trends = await get_market_trends(location)
             analysis["market_trends"] = trends.model_dump()
 
