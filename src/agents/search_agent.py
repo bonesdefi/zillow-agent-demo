@@ -41,17 +41,25 @@ class SearchAgent(BaseAgent):
             - clarification_question: Question to ask user
         """
         self._log_processing("Starting property search")
+        self.logger.info(f"Processing user input: {state.user_input}")
 
         try:
             # Step 1: Extract search criteria from natural language
+            self.logger.info("Step 1: Extracting search criteria")
             criteria = await self._extract_search_criteria(state.user_input)
+            self.logger.info(f"Extracted criteria: {criteria}")
 
             # Check if we need clarification
-            if self._needs_clarification(criteria):
+            needs_clar = self._needs_clarification(criteria)
+            self.logger.info(f"Needs clarification: {needs_clar}")
+            if needs_clar:
+                self.logger.info("Requesting clarification from user")
                 return self._request_clarification(state, criteria)
 
             # Step 2: Search for properties using MCP server
+            self.logger.info("Step 2: Searching for properties")
             properties = await self._search_properties(criteria)
+            self.logger.info(f"Found {len(properties)} properties")
 
             # Step 3: Update state
             state.search_criteria = criteria
@@ -61,7 +69,22 @@ class SearchAgent(BaseAgent):
             self._log_processing(f"Found {len(properties)} properties")
             return state
 
+        except ValueError as e:
+            # Handle API errors (rate limiting, network issues, etc.)
+            error_msg = str(e)
+            self.logger.error(f"Search API error: {error_msg}")
+            # Set a user-friendly error message in the state
+            state.errors.append(f"Search API error: {error_msg}")
+            # Set final response to inform user about the issue
+            state.final_response = (
+                f"I encountered an issue while searching for properties: {error_msg} "
+                "Please try again in a few minutes."
+            )
+            return state
         except Exception as e:
+            import traceback
+            self.logger.error(f"Error in SearchAgent.process: {e}", exc_info=True)
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
             return self._add_error(state, f"Search failed: {str(e)}")
 
     async def _extract_search_criteria(self, user_input: str) -> Dict[str, Any]:
@@ -102,15 +125,22 @@ Examples:
 
         user_message = f"Extract search criteria from: '{user_input}'"
 
-        response = await self._call_llm(system_prompt, user_message, temperature=0.3)
+        self.logger.info(f"Calling LLM to extract search criteria")
+        try:
+            response = await self._call_llm(system_prompt, user_message, temperature=0.3)
+            self.logger.info(f"LLM response received: {response[:200] if len(response) > 200 else response}")
+        except Exception as e:
+            self.logger.error(f"LLM call failed: {e}", exc_info=True)
+            raise
 
         try:
             # Parse JSON response
             criteria = json.loads(response)
             self.logger.info(f"Extracted criteria: {criteria}")
             return criteria
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
             self.logger.error(f"Failed to parse LLM response as JSON: {response}")
+            self.logger.error(f"JSON decode error: {e}")
             return {"confidence": "low"}
 
     def _needs_clarification(self, criteria: Dict[str, Any]) -> bool:
@@ -191,9 +221,11 @@ Examples:
             AgentMCPError: If MCP server call fails
         """
         self._log_processing("Calling Real Estate MCP server")
+        self.logger.info(f"Search criteria: {criteria}")
 
         try:
             # Build search params
+            self.logger.info("Building PropertySearchParams")
             params = PropertySearchParams(
                 location=criteria["location"],
                 min_price=criteria.get("min_price"),
@@ -202,15 +234,22 @@ Examples:
                 bathrooms=criteria.get("bathrooms"),
                 property_type=criteria.get("property_type"),
             )
+            self.logger.info(f"Search params: {params}")
 
             # Call MCP server implementation directly (bypasses MCP tool wrapper)
+            self.logger.info("Calling search_properties_direct()")
             properties = await search_properties_direct(params)
+            self.logger.info(f"Received {len(properties)} properties from MCP server")
 
             # Convert to dict format for state
-            return [p.model_dump() for p in properties]
+            property_dicts = [p.model_dump() for p in properties]
+            self.logger.info(f"Converted {len(property_dicts)} properties to dict format")
+            return property_dicts
 
         except Exception as e:
-            self.logger.error(f"MCP server call failed: {e}")
+            import traceback
+            self.logger.error(f"MCP server call failed: {e}", exc_info=True)
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
             raise AgentMCPError(f"Failed to search properties: {e}")
 
 

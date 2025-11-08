@@ -79,7 +79,9 @@ async def understand_intent_node(state: AgentState) -> AgentState:
 
     This node uses the SearchAgent to understand user intent.
     """
+    logger.info("=" * 50)
     logger.info("Workflow: Understanding user intent")
+    logger.info(f"User input: {state.get('user_input', 'None')}")
     
     try:
         base_state = _convert_to_base_state(state)
@@ -87,16 +89,26 @@ async def understand_intent_node(state: AgentState) -> AgentState:
         
         search_agent = get_search_agent()
         logger.info("Calling SearchAgent.process()")
+        logger.info(f"SearchAgent instance: {search_agent}")
+        logger.info(f"SearchAgent name: {search_agent.name}")
+        
         result = await search_agent.process(base_state)
+        logger.info(f"SearchAgent returned successfully")
         logger.info(f"SearchAgent returned - properties: {len(result.properties)}, criteria: {result.search_criteria is not None}")
+        logger.info(f"SearchAgent errors: {result.errors}")
+        logger.info(f"Needs clarification: {result.needs_clarification}")
         
         updated_state = _convert_from_base_state(result, state)
         logger.info(f"Updated state - properties: {len(updated_state.get('properties', []))}, criteria: {updated_state.get('search_criteria') is not None}")
+        logger.info("=" * 50)
         return updated_state
     except Exception as e:
+        import traceback
+        error_traceback = traceback.format_exc()
         logger.error(f"Error in understand_intent_node: {e}", exc_info=True)
+        logger.error(f"Full traceback: {error_traceback}")
         state["errors"] = state.get("errors", []) + [f"SearchAgent error: {str(e)}"]
-        state["final_response"] = f"I encountered an error while processing your request: {str(e)}"
+        state["final_response"] = f"I encountered an error while processing your request: {str(e)}. Please try again."
         return state
 
 
@@ -209,7 +221,20 @@ def route_after_search(state: AgentState) -> Literal["analyze", "end"]:
         "analyze" if properties found, "end" if no results
     """
     properties = state.get("properties", [])
-    logger.info(f"Routing after search - properties found: {len(properties)}")
+    errors = state.get("errors", [])
+    logger.info(f"Routing after search - properties found: {len(properties)}, errors: {len(errors)}")
+    
+    # Check if there are errors (like API rate limiting)
+    if errors:
+        logger.info("Workflow: Errors detected, ending with error message")
+        # If final_response is already set (by SearchAgent), use it
+        if not state.get("final_response"):
+            error_msg = "; ".join(errors[:2])  # Show first 2 errors
+            state["final_response"] = (
+                f"I encountered an issue while searching: {error_msg}. "
+                "Please try again later."
+            )
+        return "end"
     
     if len(properties) == 0:
         logger.info("Workflow: No properties found, ending")

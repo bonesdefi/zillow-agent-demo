@@ -61,7 +61,7 @@ def _set_cache(key: str, value: dict, ttl_seconds: int = 300) -> None:
 
 
 async def _make_api_request(
-    url: str, params: dict, max_retries: int = 3, retry_delay: float = 1.0
+    url: str, params: dict, max_retries: int = 3, retry_delay: float = 1.0, use_market_api: bool = False
 ) -> dict:
     """
     Make HTTP request with retry logic and exponential backoff.
@@ -71,6 +71,7 @@ async def _make_api_request(
         params: Request parameters
         max_retries: Maximum number of retry attempts
         retry_delay: Initial retry delay in seconds
+        use_market_api: If True, use zillow-working-api instead of real-time-zillow-data
 
     Returns:
         JSON response as dictionary
@@ -82,28 +83,52 @@ async def _make_api_request(
     if not settings.rapidapi_key:
         raise ValueError("RAPIDAPI_KEY not configured")
 
+    # Use market API (zillow-working-api) if specified, otherwise use default (real-time-zillow-data)
+    api_host = settings.zillow_market_api_host if use_market_api else settings.zillow_api_host
+    
     headers = {
         "X-RapidAPI-Key": settings.rapidapi_key,
-        "X-RapidAPI-Host": settings.zillow_api_host,
+        "X-RapidAPI-Host": api_host,
     }
+    
+    # Log request details for debugging (mask API key)
+    logger.debug(f"Making API request to: {url}")
+    logger.debug(f"API Host: {api_host}")
+    logger.debug(f"Using Market API: {use_market_api}")
+    logger.info(f"Request params: {params}")
+    logger.info(f"Request headers: X-RapidAPI-Host={headers['X-RapidAPI-Host']}, X-RapidAPI-Key={headers['X-RapidAPI-Key'][:15]}...")
 
     for attempt in range(max_retries):
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(url, headers=headers, params=params)
+                logger.info(f"Response status: {response.status_code}")
+                logger.info(f"Response headers: {dict(response.headers)}")
                 response.raise_for_status()
                 return response.json()
 
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
-                # Rate limited - wait longer
-                wait_time = retry_delay * (2 ** attempt) * 2
+                # Rate limited - check for Retry-After header, or use longer exponential backoff
+                retry_after = e.response.headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        wait_time = float(retry_after)
+                        logger.info(f"API specified Retry-After: {wait_time}s")
+                    except ValueError:
+                        wait_time = 30.0  # Default to 30 seconds if header is invalid
+                else:
+                    # Longer exponential backoff for rate limits: 10s, 20s, 40s
+                    wait_time = 10.0 * (2 ** attempt)
+                
                 logger.warning(
-                    f"Rate limited. Waiting {wait_time}s before retry {attempt + 1}/{max_retries}"
+                    f"Rate limited. Waiting {wait_time:.1f}s before retry {attempt + 1}/{max_retries}"
                 )
                 if attempt < max_retries - 1:
                     await asyncio.sleep(wait_time)
                     continue
+                # If we've exhausted retries, raise the error
+                logger.error(f"Rate limit persists after {max_retries} retries")
             raise
 
         except httpx.RequestError as e:
@@ -193,8 +218,11 @@ async def _search_properties_impl(params: PropertySearchParams) -> List[Property
                 "RAPIDAPI_KEY not configured. Please set your RapidAPI key in .env file"
             )
 
-        # Prepare API request parameters for Zillow API via RapidAPI
-        # Use the /search endpoint which supports location-based search
+        # Use real-time-zillow-data API /search endpoint - this returns multiple properties
+        # The zillow-working-api /search/byaddress only returns a single property
+        url = f"{settings.zillow_api_base_url}/search"
+        
+        # Prepare API request parameters for real-time-zillow-data /search endpoint
         api_params = {
             "location": params.location,
             "home_status": "FOR_SALE",
@@ -204,45 +232,136 @@ async def _search_properties_impl(params: PropertySearchParams) -> List[Property
         }
         
         # Add optional filters if provided
-        # Note: The API may support additional filters - check documentation
-        # For now, we'll filter results after receiving them
-        
-        # Use the /search endpoint (works with real-time-zillow-data API)
-        url = f"{settings.zillow_api_base_url}/search"
-        logger.info(f"Calling Zillow API: {url} with params: {api_params}")
+        # Note: The API may not support all filters, so we'll filter results after receiving them
+        logger.info(f"Calling real-time-zillow-data API: {url} with params: {api_params}")
+        logger.info(f"Using API key: {settings.rapidapi_key[:15]}... (length: {len(settings.rapidapi_key)})")
         
         response_data = None
         try:
-            response_data = await _make_api_request(url, api_params)
+            # Use real-time-zillow-data API (not market_api) for the search endpoint
+            response_data = await _make_api_request(url, api_params, use_market_api=False)
             logger.info(f"API call successful, received response")
         except httpx.HTTPStatusError as e:
             error_status = e.response.status_code
             error_msg = str(e)
             logger.error(f"API request failed with status {error_status}: {error_msg}")
-            return []
+            
+            # For rate limiting (429), raise immediately with clear message
+            if error_status == 429:
+                raise ValueError(
+                    "The Zillow API is currently rate-limited. Please wait a few minutes and try again. "
+                    "You may have exceeded your API request quota. "
+                    "Note: The new API key should help, but rate limits may still apply."
+                )
+            # For server errors (5xx), raise with error message
+            elif error_status >= 500:
+                raise ValueError(
+                    f"The Zillow API server is experiencing issues (status {error_status}). "
+                    "Please try again later."
+                )
+            # For authentication errors (401), check API key
+            elif error_status == 401:
+                raise ValueError(
+                    "API authentication failed. Please check that your RAPIDAPI_KEY is correct and active. "
+                    "The API key should be set in your .env file."
+                )
+            else:
+                # For other 4xx errors, raise with error message
+                raise ValueError(
+                    f"API request failed with status {error_status}: {error_msg}. "
+                    "Please check your API key and endpoint configuration."
+                )
+        except httpx.RequestError as e:
+            logger.error(f"Network error calling Zillow API: {e}")
+            raise ValueError(
+                f"Network error while connecting to Zillow API: {str(e)}. "
+                "Please check your internet connection and try again."
+            )
         except Exception as e:
-            logger.error(f"Unexpected error calling Zillow API: {e}")
-            return []
+            logger.error(f"Unexpected error calling Zillow API: {e}", exc_info=True)
+            raise
 
         # Parse real API response and convert to Property objects
-        # The /search endpoint returns: {status: "OK", data: [...], ...}
+        # real-time-zillow-data /search endpoint returns property listings
+        # Handle both array responses and object responses with data array
         properties = []
         
-        if not isinstance(response_data, dict):
+        # Log full response structure for debugging
+        logger.info(f"Response type: {type(response_data)}")
+        if isinstance(response_data, dict):
+            logger.info(f"Response keys: {list(response_data.keys())}")
+            # Log all top-level keys and their types (but limit full response logging)
+            for key, value in response_data.items():
+                if isinstance(value, (dict, list)):
+                    value_str = f"{len(value)} items" if isinstance(value, list) else "dict"
+                else:
+                    value_str = str(value)[:200]
+                logger.info(f"  {key}: {type(value)} - {value_str}")
+        elif isinstance(response_data, list):
+            logger.info(f"Response is a list with {len(response_data)} items")
+        
+        # Extract properties - real-time-zillow-data /search returns property listings
+        # Response may be: array, {data: array}, {results: array}, or {properties: array}
+        props_list = []
+        
+        if isinstance(response_data, list):
+            # Direct array response
+            props_list = response_data
+            logger.info("Response is a direct array")
+        elif isinstance(response_data, dict):
+            # Check if this is a single property object (has zpid, address, etc.)
+            if "zpid" in response_data or "address" in response_data:
+                # This is a single property, wrap it in a list
+                logger.info("Response is a single property object, wrapping in list")
+                props_list = [response_data]
+            elif "data" in response_data:
+                data = response_data.get("data", [])
+                if isinstance(data, list):
+                    props_list = data
+                    logger.info(f"Found properties array in 'data' key with {len(props_list)} items")
+                elif isinstance(data, dict) and ("zpid" in data or "address" in data):
+                    # Single property in data key
+                    props_list = [data]
+                    logger.info("Found single property in 'data' key")
+            elif "results" in response_data:
+                results = response_data.get("results", [])
+                if isinstance(results, list):
+                    props_list = results
+                    logger.info(f"Found properties array in 'results' key with {len(props_list)} items")
+                elif isinstance(results, dict) and ("zpid" in results or "address" in results):
+                    props_list = [results]
+                    logger.info("Found single property in 'results' key")
+            elif "properties" in response_data:
+                props_list = response_data.get("properties", [])
+                logger.info(f"Found properties in 'properties' key: {len(props_list) if isinstance(props_list, list) else 1}")
+            elif "error" in response_data or "message" in response_data:
+                # Error response
+                error_msg = response_data.get("error") or response_data.get("message")
+                logger.error(f"API returned error: {error_msg}")
+                return []
+            else:
+                # Try to find any array in the response
+                for key, value in response_data.items():
+                    if isinstance(value, list) and len(value) > 0:
+                        # Check if it looks like a property list
+                        if isinstance(value[0], dict) and any(k in value[0] for k in ["address", "price", "zpid", "streetAddress"]):
+                            props_list = value
+                            logger.info(f"Found properties in response key: {key}")
+                            break
+                    elif isinstance(value, dict) and ("zpid" in value or "address" in value):
+                        # Single property as a dict value
+                        props_list = [value]
+                        logger.info(f"Found single property in response key: {key}")
+                        break
+        else:
             logger.warning(f"Unexpected response type: {type(response_data)}")
             return []
         
-        # Check response status
-        status = response_data.get("status", "")
-        if status != "OK":
-            logger.warning(f"API returned non-OK status: {status}")
-            # Continue anyway in case data is still present
-        
-        # Extract properties from data array
-        props_list = response_data.get("data", [])
         if not props_list:
-            logger.warning(f"No properties found in API response data array")
-            logger.debug(f"Response keys: {list(response_data.keys())}")
+            logger.warning(f"No properties found in API response")
+            # Log a sample of the response for debugging (first 500 chars)
+            response_sample = str(response_data)[:500] if response_data else "None"
+            logger.info(f"Response sample: {response_sample}")
             return []
         
         logger.info(f"Found {len(props_list)} properties in API response")

@@ -26,9 +26,18 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 from src.graph.workflow import create_workflow
 from src.graph.state import AgentState
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging to show in terminal where Streamlit runs
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)  # Ensure logs go to stdout
+    ]
+)
 logger = logging.getLogger(__name__)
+# Set log level for all our modules
+logging.getLogger("src").setLevel(logging.INFO)
+logging.getLogger("agent").setLevel(logging.INFO)
 
 # Page configuration
 st.set_page_config(
@@ -340,14 +349,25 @@ async def process_user_message(user_input: str):
         # Process through workflow
         add_agent_log("Workflow", f"Processing: {user_input[:50]}...")
         logger.info(f"Invoking workflow with user_input: {user_input}")
+        logger.info(f"Initial state keys: {list(initial_state.keys())}")
         
-        result = await st.session_state.workflow.ainvoke(initial_state)
+        # Add detailed logging before invoking
+        import traceback
+        try:
+            result = await st.session_state.workflow.ainvoke(initial_state)
+            logger.info("Workflow invocation completed successfully")
+        except Exception as workflow_error:
+            logger.error(f"Workflow invocation failed: {workflow_error}", exc_info=True)
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
         
-        logger.info(f"Workflow completed. Result keys: {result.keys() if isinstance(result, dict) else 'Not a dict'}")
+        logger.info(f"Workflow completed. Result type: {type(result)}")
+        logger.info(f"Result keys: {result.keys() if isinstance(result, dict) else 'Not a dict'}")
         logger.info(f"Final response: {result.get('final_response', 'None')[:100] if result.get('final_response') else 'None'}")
         logger.info(f"Search criteria: {result.get('search_criteria')}")
         logger.info(f"Properties count: {len(result.get('properties', []))}")
         logger.info(f"Errors: {result.get('errors', [])}")
+        logger.info(f"Needs clarification: {result.get('needs_clarification', False)}")
         
         # Update session state (result is AgentState TypedDict)
         if result.get("search_criteria"):
@@ -402,14 +422,26 @@ async def process_user_message(user_input: str):
         logger.info(f"Added assistant response: {final_response[:100]}")
         
     except Exception as e:
+        import traceback
+        error_traceback = traceback.format_exc()
         logger.error(f"Error processing message: {e}", exc_info=True)
+        logger.error(f"Full traceback: {error_traceback}")
+        
+        # More detailed error message
         error_message = f"I encountered an error: {str(e)}. Please try again."
+        if hasattr(e, '__cause__') and e.__cause__:
+            error_message += f" Cause: {str(e.__cause__)}"
+        
         st.session_state.messages.append({
             "role": "assistant",
             "content": error_message,
             "timestamp": datetime.now()
         })
-        add_agent_log("System", f"Error: {str(e)}", {"error": str(e), "traceback": str(e.__traceback__) if hasattr(e, '__traceback__') else None})
+        add_agent_log("System", f"Error: {str(e)}", {
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "traceback": error_traceback[:500]  # First 500 chars of traceback
+        })
 
 
 def run_async(coro):
