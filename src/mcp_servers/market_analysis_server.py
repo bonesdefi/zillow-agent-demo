@@ -9,7 +9,6 @@ import asyncio
 import math
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
-from urllib.parse import quote
 
 import httpx
 from fastmcp import FastMCP
