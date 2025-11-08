@@ -3,6 +3,8 @@ Streamlit UI for Real Estate AI Assistant.
 
 This is the main entry point for the web application.
 Provides a chat interface for interacting with the multi-agent system.
+
+Version: 1.0.1 - Fixed FunctionTool callable issue
 """
 
 import streamlit as st
