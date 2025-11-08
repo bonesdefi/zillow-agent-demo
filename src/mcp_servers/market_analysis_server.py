@@ -7,6 +7,7 @@ and comparable sales data.
 
 import asyncio
 import math
+import re
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 
