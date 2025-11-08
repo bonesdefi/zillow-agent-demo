@@ -93,8 +93,9 @@ class Settings(BaseSettings):
     @model_validator(mode='after')
     def check_streamlit_secrets(self) -> 'Settings':
         """
-        Check Streamlit secrets if environment variables are not set.
-        This runs after Pydantic loads from environment variables.
+        Check Streamlit secrets and override values when available.
+        Priority: Streamlit secrets > Environment variables > Defaults
+        This runs after Pydantic BaseSettings loads from environment variables.
         """
         # Only check Streamlit secrets if we're in a Streamlit context
         if not STREAMLIT_AVAILABLE or st is None:
@@ -102,80 +103,73 @@ class Settings(BaseSettings):
         
         try:
             if hasattr(st, 'secrets'):
-                # Update fields from Streamlit secrets if they're empty
-                # Check each field and update from secrets if env var wasn't set
-                secret_fields = {
-                    'anthropic_api_key': 'ANTHROPIC_API_KEY',
-                    'anthropic_model': 'ANTHROPIC_MODEL',
-                    'rapidapi_key': 'RAPIDAPI_KEY',
-                    'zillow_api_base_url': 'ZILLOW_API_BASE_URL',
-                    'zillow_api_host': 'ZILLOW_API_HOST',
-                    'zillow_market_api_base_url': 'ZILLOW_MARKET_API_BASE_URL',
-                    'zillow_market_api_host': 'ZILLOW_MARKET_API_HOST',
-                    'mcp_server_host': 'MCP_SERVER_HOST',
-                    'log_level': 'LOG_LEVEL',
-                }
+                # Try to access secrets - Streamlit secrets work like a dict
+                # Access secrets directly using getattr or dict access
+                secrets_to_check = [
+                    ('ANTHROPIC_API_KEY', 'anthropic_api_key', str),
+                    ('ANTHROPIC_MODEL', 'anthropic_model', str),
+                    ('RAPIDAPI_KEY', 'rapidapi_key', str),
+                    ('ZILLOW_API_BASE_URL', 'zillow_api_base_url', str),
+                    ('ZILLOW_API_HOST', 'zillow_api_host', str),
+                    ('ZILLOW_MARKET_API_BASE_URL', 'zillow_market_api_base_url', str),
+                    ('ZILLOW_MARKET_API_HOST', 'zillow_market_api_host', str),
+                    ('MCP_SERVER_HOST', 'mcp_server_host', str),
+                    ('LOG_LEVEL', 'log_level', str),
+                    ('MCP_SERVER_PORT_REAL_ESTATE', 'mcp_server_port_real_estate', int),
+                    ('MCP_SERVER_PORT_MARKET_ANALYSIS', 'mcp_server_port_market_analysis', int),
+                    ('MCP_SERVER_PORT_USER_CONTEXT', 'mcp_server_port_user_context', int),
+                    ('STREAMLIT_SERVER_PORT', 'streamlit_server_port', int),
+                    ('ENABLE_DEBUG_MODE', 'enable_debug_mode', lambda x: str(x).lower() == "true"),
+                ]
                 
-                for field_name, secret_key in secret_fields.items():
-                    # Only override if field is empty or default value
-                    current_value = getattr(self, field_name, "")
-                    if not current_value or current_value == "":
+                for secret_key, field_name, converter in secrets_to_check:
+                    try:
+                        # Try multiple ways to access secrets
+                        secret_value = None
+                        
+                        # Method 1: Dict-style access
                         try:
-                            # Try dict access first
-                            if hasattr(st.secrets, '__getitem__'):
-                                try:
-                                    secret_value = st.secrets[secret_key]
-                                    if secret_value:
-                                        setattr(self, field_name, str(secret_value))
-                                except (KeyError, TypeError):
-                                    # Try attribute access
-                                    if hasattr(st.secrets, secret_key):
-                                        secret_value = getattr(st.secrets, secret_key)
-                                        if secret_value:
-                                            setattr(self, field_name, str(secret_value))
-                        except (AttributeError, Exception):
+                            if hasattr(st.secrets, '__contains__') and secret_key in st.secrets:
+                                secret_value = st.secrets[secret_key]
+                        except (TypeError, KeyError, AttributeError):
                             pass
-                
-                # Handle integer fields
-                if not self.mcp_server_port_real_estate or self.mcp_server_port_real_estate == 8001:
-                    try:
-                        port = _get_env_var("MCP_SERVER_PORT_REAL_ESTATE", "")
-                        if port:
-                            self.mcp_server_port_real_estate = int(port)
-                    except (ValueError, Exception):
-                        pass
-                
-                if not self.mcp_server_port_market_analysis or self.mcp_server_port_market_analysis == 8002:
-                    try:
-                        port = _get_env_var("MCP_SERVER_PORT_MARKET_ANALYSIS", "")
-                        if port:
-                            self.mcp_server_port_market_analysis = int(port)
-                    except (ValueError, Exception):
-                        pass
-                
-                if not self.mcp_server_port_user_context or self.mcp_server_port_user_context == 8003:
-                    try:
-                        port = _get_env_var("MCP_SERVER_PORT_USER_CONTEXT", "")
-                        if port:
-                            self.mcp_server_port_user_context = int(port)
-                    except (ValueError, Exception):
-                        pass
-                
-                if not self.streamlit_server_port or self.streamlit_server_port == 8501:
-                    try:
-                        port = _get_env_var("STREAMLIT_SERVER_PORT", "")
-                        if port:
-                            self.streamlit_server_port = int(port)
-                    except (ValueError, Exception):
-                        pass
-                
-                # Handle boolean field
-                debug_mode = _get_env_var("ENABLE_DEBUG_MODE", "")
-                if debug_mode:
-                    self.enable_debug_mode = debug_mode.lower() == "true"
+                        
+                        # Method 2: Attribute access (st.secrets.ANTHROPIC_API_KEY)
+                        if secret_value is None:
+                            try:
+                                if hasattr(st.secrets, secret_key):
+                                    secret_value = getattr(st.secrets, secret_key)
+                            except (AttributeError, Exception):
+                                pass
+                        
+                        # Method 3: Try get() method if available
+                        if secret_value is None:
+                            try:
+                                if hasattr(st.secrets, 'get'):
+                                    secret_value = st.secrets.get(secret_key)
+                            except (Exception):
+                                pass
+                        
+                        # If we found a secret value, apply it
+                        if secret_value is not None and secret_value != "":
+                            try:
+                                if converter == str:
+                                    setattr(self, field_name, str(secret_value))
+                                elif converter == int:
+                                    setattr(self, field_name, int(secret_value))
+                                else:
+                                    # For boolean converter (lambda)
+                                    setattr(self, field_name, converter(secret_value))
+                            except (ValueError, TypeError, Exception):
+                                # Skip if conversion fails
+                                pass
+                                
+                    except (AttributeError, Exception):
+                        # Skip this secret if access fails
+                        continue
                     
-        except (AttributeError, RuntimeError, Exception) as e:
-            # If Streamlit secrets are not available, that's okay - we'll use env vars
+        except (AttributeError, RuntimeError, Exception):
+            # If Streamlit secrets are not available, that's okay - use env vars/defaults
             pass
         
         return self
