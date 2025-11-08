@@ -576,7 +576,7 @@ async def get_school_ratings(location: str, radius: int = 5, zpid: Optional[str]
 
 
 @mcp.tool()
-async def get_market_trends(location: str, timeframe: str = "1y") -> MarketTrends:
+async def get_market_trends(location: str, timeframe: str = "1y", property_price: Optional[int] = None, property_sqft: Optional[int] = None) -> MarketTrends:
     """
     Get price trends and market velocity.
 
@@ -607,11 +607,15 @@ async def get_market_trends(location: str, timeframe: str = "1y") -> MarketTrend
     if timeframe not in valid_timeframes:
         raise ValueError(f"Invalid timeframe. Must be one of: {', '.join(valid_timeframes)}")
 
-    # Check cache (1 hour TTL for market trends)
-    cache_key = _get_cache_key("market_trends", location=location, timeframe=timeframe)
+    # Check cache (1 hour TTL for market trends) - include property-specific params in cache key
+    # Note: We cache by city/state location since market trends are city-level, but price_per_sqft uses property data
+    cache_key = _get_cache_key("market_trends", location=location, timeframe=timeframe, price=property_price or "none", sqft=property_sqft or "none")
     cached_result = _get_cached(cache_key, ttl_seconds=3600)
     if cached_result:
         logger.info(f"Returning cached market trends for: {location}")
+        # If cached, still recalculate price_per_sqft if property-specific data was provided
+        if property_price and property_sqft and property_sqft > 0:
+            cached_result["price_per_sqft"] = float(property_price) / float(property_sqft)
         return MarketTrends(**cached_result)
 
     try:
@@ -702,10 +706,17 @@ async def get_market_trends(location: str, timeframe: str = "1y") -> MarketTrend
         new_listings = market_overview.get("new_listings", 0)
         sales_velocity = new_listings * sale_to_list_ratio if new_listings > 0 else 0
         
-        # Calculate price per sqft (estimate using median price and typical home size ~2000 sqft)
-        # This is an approximation since we don't have exact square footage in market data
-        typical_sqft = 2000  # Typical home size for estimation
-        price_per_sqft = float(median_price) / typical_sqft if median_price > 0 and typical_sqft > 0 else 0
+        # Calculate price per sqft
+        # If we have property-specific data, use that; otherwise use median price with typical home size
+        if property_price and property_sqft and property_sqft > 0:
+            # Use actual property price and square footage for accurate price_per_sqft
+            price_per_sqft = float(property_price) / float(property_sqft)
+        elif median_price > 0:
+            # Fallback: estimate using median price and typical home size
+            typical_sqft = 2000  # Typical home size for estimation
+            price_per_sqft = float(median_price) / typical_sqft
+        else:
+            price_per_sqft = 0
 
         # Determine trend direction from price change
         if price_change_percent > 2:

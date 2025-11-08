@@ -128,7 +128,10 @@ class AnalysisAgent(BaseAgent):
 
         try:
             # Get market trends using full address (housing_market endpoint uses city/state)
-            trends = await get_market_trends(location)
+            # Pass property-specific price and square footage for accurate price_per_sqft calculation
+            property_price = property_data.get("price")
+            property_sqft = property_data.get("square_feet")
+            trends = await get_market_trends(location, property_price=property_price, property_sqft=property_sqft)
             analysis["market_trends"] = trends.model_dump()
 
         except Exception as e:
