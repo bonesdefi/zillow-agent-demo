@@ -260,15 +260,9 @@ def display_property_card(property_data: Dict[str, Any], index: int):
                             st.markdown(f"**Overall:** {summary['overall']}")
                 
                 # Detailed data tabs
-                tab1, tab2, tab3 = st.tabs(["🏘️ Neighborhood", "🏫 Schools", "📈 Market"])
+                tab1, tab2 = st.tabs(["🏫 Schools", "📈 Market"])
                 
                 with tab1:
-                    if analysis.get("neighborhood"):
-                        st.json(analysis["neighborhood"], expanded=True)
-                    else:
-                        st.info("Neighborhood data not available")
-                
-                with tab2:
                     if analysis.get("schools"):
                         schools = analysis["schools"]
                         if isinstance(schools, list):
@@ -284,7 +278,7 @@ def display_property_card(property_data: Dict[str, Any], index: int):
                     else:
                         st.info("School data not available")
                 
-                with tab3:
+                with tab2:
                     if analysis.get("market_trends"):
                         st.json(analysis["market_trends"], expanded=True)
                     else:

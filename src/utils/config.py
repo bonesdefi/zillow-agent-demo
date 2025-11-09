@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     # Zillow Working API (for market analytics - housing_market endpoint)
     zillow_market_api_base_url: str = "https://zillow-working-api.p.rapidapi.com"
     zillow_market_api_host: str = "zillow-working-api.p.rapidapi.com"
+    
+    # Zillow.com API (NEW - primary API for property search)
+    zillow_com_api_base_url: str = "https://zillow-com1.p.rapidapi.com"
+    zillow_com_api_host: str = "zillow-com1.p.rapidapi.com"
 
     # MCP Server Configuration
     mcp_server_host: str = "localhost"
@@ -113,6 +117,8 @@ class Settings(BaseSettings):
                     ('ZILLOW_API_HOST', 'zillow_api_host', str),
                     ('ZILLOW_MARKET_API_BASE_URL', 'zillow_market_api_base_url', str),
                     ('ZILLOW_MARKET_API_HOST', 'zillow_market_api_host', str),
+                    ('ZILLOW_COM_API_BASE_URL', 'zillow_com_api_base_url', str),
+                    ('ZILLOW_COM_API_HOST', 'zillow_com_api_host', str),
                     ('MCP_SERVER_HOST', 'mcp_server_host', str),
                     ('LOG_LEVEL', 'log_level', str),
                     ('MCP_SERVER_PORT_REAL_ESTATE', 'mcp_server_port_real_estate', int),

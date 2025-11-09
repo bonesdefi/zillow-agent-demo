@@ -168,16 +168,6 @@ class AdvisorAgent(BaseAgent):
             elif avg_rating >= 7.0:
                 score += 5
 
-        # Neighborhood quality
-        neighborhood = analysis.get("neighborhood")
-        if neighborhood:
-            walkability = neighborhood.get("walkability_score", 0)
-            if walkability >= 70:
-                score += 5
-            crime_rate = neighborhood.get("crime_rate", "").lower()
-            if "low" in crime_rate:
-                score += 5
-
         # Market trends
         trends = analysis.get("market_trends")
         if trends:
@@ -211,7 +201,7 @@ class AdvisorAgent(BaseAgent):
 
 Be specific about:
 - Price and value
-- Location and neighborhood
+- Location
 - Schools (if available)
 - Market trends
 - Overall fit for the buyer
@@ -229,7 +219,6 @@ Recommendation Score: {score:.1f}/100
 Analysis Summary:
 {analysis.get('summary', {})}
 
-Neighborhood: {analysis.get('neighborhood', {})}
 Schools: {len(analysis.get('schools', []))} nearby
 Market Trends: {analysis.get('market_trends', {})}
 Affordability: {analysis.get('affordability', {})}
@@ -267,16 +256,6 @@ Affordability: {analysis.get('affordability', {})}
             high_rated = [s for s in schools if s.get("rating", 0) >= 8.0]
             if high_rated:
                 highlights.append(f"⭐ {len(high_rated)} highly-rated schools nearby")
-
-        # Neighborhood
-        neighborhood = analysis.get("neighborhood")
-        if neighborhood:
-            walkability = neighborhood.get("walkability_score", 0)
-            if walkability >= 70:
-                highlights.append("🚶 Walkable neighborhood")
-            crime_rate = neighborhood.get("crime_rate", "").lower()
-            if "low" in crime_rate:
-                highlights.append("🛡️ Low crime area")
 
         # Market trends
         trends = analysis.get("market_trends")

@@ -1,8 +1,7 @@
 """Market Analysis MCP Server.
 
 This server provides tools for analyzing real estate market data including
-neighborhood statistics, school ratings, market trends, affordability calculations,
-and comparable sales data.
+school ratings, market trends, affordability calculations, and comparable sales data.
 """
 
 import asyncio
@@ -60,7 +59,7 @@ def _set_cache(key: str, value: dict, ttl_seconds: int = 3600) -> None:
 
 
 async def _make_api_request(
-    url: str, params: dict, max_retries: int = 3, retry_delay: float = 1.0, use_market_api: bool = False
+    url: str, params: dict, max_retries: int = 3, retry_delay: float = 1.0, use_market_api: bool = False, use_zillow_com_api: bool = False
 ) -> dict:
     """
     Make HTTP request with retry logic and exponential backoff.
@@ -82,8 +81,13 @@ async def _make_api_request(
     if not settings.rapidapi_key:
         raise ValueError("RAPIDAPI_KEY not configured")
 
-    # Use market API host if specified
-    api_host = settings.zillow_market_api_host if use_market_api else settings.zillow_api_host
+    # Select API host based on flags
+    if use_zillow_com_api:
+        api_host = settings.zillow_com_api_host
+    elif use_market_api:
+        api_host = settings.zillow_market_api_host
+    else:
+        api_host = settings.zillow_api_host
     
     headers = {
         "X-RapidAPI-Key": settings.rapidapi_key,
@@ -229,97 +233,131 @@ async def _get_neighborhood_stats_impl(location: str, zpid: Optional[str] = None
         if not settings.rapidapi_key or settings.rapidapi_key == "your_rapidapi_key_here":
             raise ValueError("RAPIDAPI_KEY not configured. Please set your RapidAPI key in .env file")
 
-        response_data = None
+        # Initialize with defaults
+        demographics = {
+            "population": 0,
+            "median_age": 0,
+            "median_income": 0,
+            "household_size": 0,
+        }
+        walkability_score = None
+        crime_score = None
+        property_details = {}
         
-        # If ZPID is available, use the new /pro/byzpid endpoint for rich data
+        # Use only the reliable /pro/byzpid endpoint (no rate limiting issues)
         if zpid:
             try:
-                logger.info(f"Using /pro/byzpid endpoint with ZPID: {zpid}")
+                logger.info(f"Fetching property data from /pro/byzpid endpoint with ZPID: {zpid}")
                 url = f"{settings.zillow_market_api_base_url}/pro/byzpid"
                 params = {"zpid": zpid}
-                response_data = await _make_api_request(url, params, use_market_api=True)
+                market_data = await _make_api_request(url, params, use_market_api=True)
                 
-                # Parse rich property data from /pro/byzpid
-                property_details = response_data.get("propertyDetails", {})
-                parent_region = property_details.get("parentRegion", {})
-                neighborhood_name = parent_region.get("name", "")
+                property_details = market_data.get("propertyDetails", {})
+                if property_details:
+                    logger.info(f"PropertyDetails keys from /pro/byzpid: {list(property_details.keys())[:30]}")
+                else:
+                    logger.warning(f"No propertyDetails found in /pro/byzpid response for ZPID: {zpid}")
                 
-                # Extract neighborhood info
-                # Note: /pro/byzpid doesn't have demographics, but we can get neighborhood name
-                demographics = {
-                    "population": 0,  # Not available in this endpoint
-                    "median_age": 0,
-                    "median_income": 0,
-                    "household_size": 0,
-                }
-                
-                # Try to get walkability/transit scores if available
-                walkability_score = 50.0  # Default
-                crime_score = 50.0  # Default
-                
-                # If we have neighborhood name, we can at least provide that context
-                if neighborhood_name:
-                    logger.info(f"Found neighborhood: {neighborhood_name}")
-                
-            except Exception as zpid_error:
-                logger.warning(f"Failed to use /pro/byzpid endpoint: {zpid_error}. Falling back to address-based lookup.")
-                response_data = None
+            except Exception as market_error:
+                logger.warning(f"Could not get data from /pro/byzpid: {market_error}")
+        else:
+            logger.info(f"No ZPID provided for location: {location} - using defaults for neighborhood stats")
         
-        # Fallback to address-based endpoint if ZPID failed or not provided
-        if not response_data:
-            # Call Zillow API for neighborhood data
-            # Use property-details-address endpoint (works with real-time-zillow-data API)
-            url = f"{settings.zillow_api_base_url}/property-details-address"
-            params = {"address": location}
-            response_data = await _make_api_request(url, params)
-
-        # Log response structure for debugging
-        logger.info(f"API response keys for neighborhood stats: {list(response_data.keys())[:20]}")
-
-        # Extract neighborhood data from response - try multiple possible structures
-        demographics_data = {}
-        if "demographics" in response_data:
-            demographics_data = response_data["demographics"] if isinstance(response_data["demographics"], dict) else {}
-        elif "data" in response_data and isinstance(response_data["data"], dict):
-            demographics_data = response_data["data"].get("demographics", {})
-        elif "property" in response_data and isinstance(response_data["property"], dict):
-            demographics_data = response_data["property"].get("demographics", {})
-        elif "propertyDetails" in response_data:
-            # New endpoint structure
-            property_details = response_data.get("propertyDetails", {})
+        # Extract demographics from property_details if available
+        # Try multiple nested structures
+        demographics_data = None
+        
+        # Check propertyDetails directly
+        if isinstance(property_details, dict):
+            demographics_data = property_details.get("demographics")
+        
+        # Check nested structures
+        if not demographics_data and isinstance(property_details, dict):
+            # Check parentRegion
             parent_region = property_details.get("parentRegion", {})
-            if parent_region:
-                # We have neighborhood name but not demographics
-                pass
-
-        # Only update demographics if we found data
-        if demographics_data:
-            demographics = {
-                "population": demographics_data.get("population") or demographics_data.get("populationCount") or 0,
-                "median_age": demographics_data.get("medianAge") or demographics_data.get("age") or 0,
-                "median_income": demographics_data.get("medianIncome") or demographics_data.get("income") or 0,
-                "household_size": demographics_data.get("householdSize") or demographics_data.get("household_size") or 0,
-            }
-
-        # Calculate scores from available data - try multiple locations
-        crime_score = (
-            response_data.get("crimeScore") 
-            or response_data.get("crime_score")
-            or (response_data.get("data", {}).get("crimeScore") if isinstance(response_data.get("data"), dict) else None)
-            or (response_data.get("property", {}).get("crimeScore") if isinstance(response_data.get("property"), dict) else None)
-            or (response_data.get("propertyDetails", {}).get("crimeScore") if isinstance(response_data.get("propertyDetails"), dict) else None)
-            or 50.0
-        )
+            if isinstance(parent_region, dict):
+                demographics_data = parent_region.get("demographics")
+            
+            # Check neighborhood
+            neighborhood = property_details.get("neighborhood", {})
+            if isinstance(neighborhood, dict) and not demographics_data:
+                demographics_data = neighborhood.get("demographics")
+            
+            # Check area info
+            area_info = property_details.get("areaInfo", {})
+            if isinstance(area_info, dict) and not demographics_data:
+                demographics_data = area_info.get("demographics")
         
-        walkability_score = (
-            response_data.get("walkScore")
-            or response_data.get("walk_score")
-            or response_data.get("walkability")
-            or (response_data.get("data", {}).get("walkScore") if isinstance(response_data.get("data"), dict) else None)
-            or (response_data.get("property", {}).get("walkScore") if isinstance(response_data.get("property"), dict) else None)
-            or (response_data.get("propertyDetails", {}).get("walkScore") if isinstance(response_data.get("propertyDetails"), dict) else None)
-            or 50.0
-        )
+        # Extract demographics if found
+        if demographics_data and isinstance(demographics_data, dict):
+            demographics = {
+                "population": demographics_data.get("population") or demographics_data.get("populationCount") or demographics_data.get("totalPopulation") or 0,
+                "median_age": demographics_data.get("medianAge") or demographics_data.get("age") or demographics_data.get("averageAge") or 0,
+                "median_income": demographics_data.get("medianIncome") or demographics_data.get("income") or demographics_data.get("householdIncome") or 0,
+                "household_size": demographics_data.get("householdSize") or demographics_data.get("household_size") or demographics_data.get("averageHouseholdSize") or 0,
+            }
+            # Only use if we got at least one non-zero value
+            if any(demographics.values()):
+                logger.info(f"Found demographics data: {demographics}")
+            else:
+                demographics = {"population": 0, "median_age": 0, "median_income": 0, "household_size": 0}
+        else:
+            # Try to extract from parentRegion or other nested structures
+            if isinstance(property_details, dict):
+                parent_region = property_details.get("parentRegion", {})
+                if isinstance(parent_region, dict):
+                    # Sometimes data is directly in parentRegion
+                    pop = parent_region.get("population") or parent_region.get("populationCount")
+                    if pop:
+                        demographics["population"] = int(pop) if pop else 0
+        
+        # Extract walkability score if not already found
+        if walkability_score is None:
+            # Try property_details
+            if isinstance(property_details, dict):
+                walk_score = (
+                    property_details.get("walkScore") or
+                    property_details.get("walk_score") or
+                    property_details.get("walkability") or
+                    property_details.get("walkabilityScore")
+                )
+                if walk_score is not None:
+                    walkability_score = float(walk_score)
+                    logger.info(f"Found walkability score from property_details: {walkability_score}")
+            
+            # Try nested structures
+            if walkability_score is None and isinstance(property_details, dict):
+                area_info = property_details.get("areaInfo", {})
+                if isinstance(area_info, dict):
+                    walk_score = area_info.get("walkScore") or area_info.get("walkability")
+                    if walk_score is not None:
+                        walkability_score = float(walk_score)
+                        logger.info(f"Found walkability score from areaInfo: {walkability_score}")
+        
+        # Extract crime score from property_details
+        if isinstance(property_details, dict):
+            crime_score_value = (
+                property_details.get("crimeScore") or
+                property_details.get("crime_score") or
+                property_details.get("safetyScore")
+            )
+            if crime_score_value is not None:
+                crime_score = float(crime_score_value)
+                logger.info(f"Found crime score: {crime_score}")
+        
+        # Use defaults if we couldn't find real data
+        # Note: The Zillow APIs don't typically provide walkability or demographics data
+        # These defaults are expected and acceptable
+        if walkability_score is None:
+            walkability_score = 50.0
+            logger.debug(f"Using default walkability score (50.0) - data not available from API for location: {location}")
+        
+        if crime_score is None:
+            crime_score = 50.0
+            logger.debug(f"Using default crime score (50.0) - data not available from API for location: {location}")
+        
+        # Log final values for debugging
+        logger.info(f"Final neighborhood stats - demographics: {demographics}, walkability: {walkability_score}, crime: {crime_score}")
 
         # Calculate overall score (weighted average)
         overall_score = (crime_score * 0.4 + walkability_score * 0.6)

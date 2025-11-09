@@ -61,7 +61,7 @@ def _set_cache(key: str, value: dict, ttl_seconds: int = 300) -> None:
 
 
 async def _make_api_request(
-    url: str, params: dict, max_retries: int = 3, retry_delay: float = 1.0, use_market_api: bool = False
+    url: str, params: dict, max_retries: int = 3, retry_delay: float = 1.0, use_market_api: bool = False, use_zillow_com_api: bool = False
 ) -> dict:
     """
     Make HTTP request with retry logic and exponential backoff.
@@ -72,6 +72,7 @@ async def _make_api_request(
         max_retries: Maximum number of retry attempts
         retry_delay: Initial retry delay in seconds
         use_market_api: If True, use zillow-working-api instead of real-time-zillow-data
+        use_zillow_com_api: If True, use zillow-com1 API (new primary API)
 
     Returns:
         JSON response as dictionary
@@ -83,8 +84,13 @@ async def _make_api_request(
     if not settings.rapidapi_key:
         raise ValueError("RAPIDAPI_KEY not configured")
 
-    # Use market API (zillow-working-api) if specified, otherwise use default (real-time-zillow-data)
-    api_host = settings.zillow_market_api_host if use_market_api else settings.zillow_api_host
+    # Choose API host based on flags
+    if use_zillow_com_api:
+        api_host = settings.zillow_com_api_host
+    elif use_market_api:
+        api_host = settings.zillow_market_api_host
+    else:
+        api_host = settings.zillow_api_host
     
     headers = {
         "X-RapidAPI-Key": settings.rapidapi_key,
@@ -94,7 +100,7 @@ async def _make_api_request(
     # Log request details for debugging (mask API key)
     logger.debug(f"Making API request to: {url}")
     logger.debug(f"API Host: {api_host}")
-    logger.debug(f"Using Market API: {use_market_api}")
+    logger.debug(f"Using Market API: {use_market_api}, Using Zillow.com API: {use_zillow_com_api}")
     logger.info(f"Request params: {params}")
     logger.info(f"Request headers: X-RapidAPI-Host={headers['X-RapidAPI-Host']}, X-RapidAPI-Key={headers['X-RapidAPI-Key'][:15]}...")
 
@@ -218,9 +224,9 @@ async def _search_properties_impl(params: PropertySearchParams) -> List[Property
                 "RAPIDAPI_KEY not configured. Please set your RapidAPI key in .env file"
             )
 
-        # Use real-time-zillow-data API /search endpoint - this returns multiple properties
-        # The zillow-working-api /search/byaddress only returns a single property
-        url = f"{settings.zillow_api_base_url}/search"
+        # Try multiple endpoints with fallback logic
+        # Primary: real-time-zillow-data /search endpoint (returns multiple properties)
+        # Fallbacks: alternative endpoints if primary fails
         
         # Prepare API request parameters for real-time-zillow-data /search endpoint
         api_params = {
@@ -231,67 +237,211 @@ async def _search_properties_impl(params: PropertySearchParams) -> List[Property
             "page": "1",
         }
         
-        # Add optional filters if provided
-        # Note: The API may not support all filters, so we'll filter results after receiving them
-        logger.info(f"Calling real-time-zillow-data API: {url} with params: {api_params}")
-        logger.info(f"Using API key: {settings.rapidapi_key[:15]}... (length: {len(settings.rapidapi_key)})")
+        # List of endpoints to try in order
+        # NEW: zillow-com1.p.rapidapi.com API with /propertyExtendedSearch endpoint (PRIMARY)
+        # This is the new paid API that supports location-based property search
+        
+        # Map property type to API format
+        home_type_map = {
+            "house": "Houses",
+            "houses": "Houses",
+            "condo": "Condos",
+            "condos": "Condos",
+            "townhouse": "Townhomes",
+            "townhomes": "Townhomes",
+        }
+        api_home_type = home_type_map.get(params.property_type.lower() if params.property_type else "", "Houses")
+        
+        # Build search parameters for zillow-com1 API
+        search_params = {
+            "location": params.location,
+            "status": "forSale",  # forSale, forRent, recentlySold
+        }
+        
+        # Add optional filters
+        if params.property_type:
+            search_params["home_type"] = api_home_type
+        if params.bedrooms:
+            search_params["bedsMin"] = str(params.bedrooms)
+        if params.bathrooms:
+            search_params["bathsMin"] = str(int(params.bathrooms))
+        if params.min_price:
+            search_params["priceMin"] = str(params.min_price)
+        if params.max_price:
+            search_params["priceMax"] = str(params.max_price)
+        
+        endpoints_to_try = [
+            # PRIMARY: zillow-com1 API /propertyExtendedSearch (supports location search)
+            {
+                "url": f"{settings.zillow_com_api_base_url}/propertyExtendedSearch",
+                "params": search_params,
+                "use_market_api": False,
+                "use_zillow_com_api": True,
+                "name": "zillow-com1 /propertyExtendedSearch"
+            },
+        ]
         
         response_data = None
-        try:
-            # Use real-time-zillow-data API (not market_api) for the search endpoint
-            response_data = await _make_api_request(url, api_params, use_market_api=False)
-            logger.info(f"API call successful, received response")
-        except httpx.HTTPStatusError as e:
-            error_status = e.response.status_code
-            error_msg = str(e)
-            logger.error(f"API request failed with status {error_status}: {error_msg}")
+        last_error = None
+        
+        # Try each endpoint until one works
+        for endpoint_config in endpoints_to_try:
+            url = endpoint_config["url"]
+            endpoint_params = endpoint_config["params"]
+            use_market_api = endpoint_config.get("use_market_api", False)
+            use_zillow_com_api = endpoint_config.get("use_zillow_com_api", False)
+            endpoint_name = endpoint_config["name"]
             
-            # For rate limiting (429), raise immediately with clear message
-            if error_status == 429:
-                raise ValueError(
-                    "The Zillow API is currently rate-limited. Please wait a few minutes and try again. "
-                    "You may have exceeded your API request quota. "
-                    "Note: The new API key should help, but rate limits may still apply."
+            
+            logger.info(f"Trying endpoint: {endpoint_name} at {url}")
+            logger.info(f"Request params: {endpoint_params}")
+            logger.info(f"Using API key: {settings.rapidapi_key[:15]}... (length: {len(settings.rapidapi_key)})")
+            
+            # Log API configuration for debugging
+            if use_zillow_com_api:
+                logger.info(f"API Configuration - Using zillow-com1 API")
+                logger.info(f"  Base URL: {settings.zillow_com_api_base_url}")
+                logger.info(f"  Host: {settings.zillow_com_api_host}")
+            elif use_market_api:
+                logger.info(f"API Configuration - Using zillow-working-api")
+                logger.info(f"  Base URL: {settings.zillow_market_api_base_url}")
+                logger.info(f"  Host: {settings.zillow_market_api_host}")
+            else:
+                logger.info(f"API Configuration - Using real-time-zillow-data API")
+                logger.info(f"  Base URL: {settings.zillow_api_base_url}")
+                logger.info(f"  Host: {settings.zillow_api_host}")
+            
+            try:
+                response_data = await _make_api_request(
+                    url, 
+                    endpoint_params, 
+                    use_market_api=use_market_api,
+                    use_zillow_com_api=use_zillow_com_api
                 )
-            # For server errors (5xx), raise with error message
-            elif error_status >= 500:
-                raise ValueError(
-                    f"The Zillow API server is experiencing issues (status {error_status}). "
-                    "Please try again later."
-                )
-            # For authentication errors (401), check API key
-            elif error_status == 401:
-                raise ValueError(
-                    "API authentication failed. Please check that your RAPIDAPI_KEY is correct and active. "
-                    "The API key should be set in your .env file."
+                logger.info(f"API call successful using {endpoint_name}, received response")
+                break  # Success! Exit the loop
+                
+            except httpx.HTTPStatusError as e:
+                error_status = e.response.status_code
+                error_msg = str(e)
+                last_error = e
+                
+                # Try to extract error details from response
+                error_response_text = ""
+                try:
+                    error_response_text = e.response.text[:500] if e.response.text else ""
+                    logger.warning(f"Endpoint {endpoint_name} failed with status {error_status}")
+                    logger.warning(f"Response: {error_response_text}")
+                except:
+                    logger.warning(f"Endpoint {endpoint_name} failed with status {error_status}: {error_msg}")
+                
+                # For rate limiting (429), try next endpoint but log it
+                if error_status == 429:
+                    logger.warning(f"Rate limited on {endpoint_name}, trying next endpoint...")
+                    continue
+                # For 403/404, try next endpoint (endpoint might not exist or be accessible)
+                elif error_status in (403, 404):
+                    logger.warning(f"Endpoint {endpoint_name} returned {error_status} - endpoint may not exist or API key may not have access. Trying next endpoint...")
+                    if error_response_text:
+                        logger.info(f"Error response from {endpoint_name}: {error_response_text}")
+                    continue
+                # For authentication errors (401), don't try other endpoints
+                elif error_status == 401:
+                    raise ValueError(
+                        "API authentication failed. Please check that your RAPIDAPI_KEY is correct and active. "
+                        "The API key should be set in your .env file."
+                    )
+                # For server errors (5xx), try next endpoint
+                elif error_status >= 500:
+                    logger.warning(f"Server error on {endpoint_name}, trying next endpoint...")
+                    continue
+                # For other errors, continue to next endpoint
+                else:
+                    logger.warning(f"Unexpected error {error_status} on {endpoint_name}, trying next endpoint...")
+                    continue
+                    
+            except httpx.RequestError as e:
+                logger.warning(f"Network error on {endpoint_name}: {e}, trying next endpoint...")
+                last_error = e
+                continue
+            except Exception as e:
+                logger.warning(f"Unexpected error on {endpoint_name}: {e}, trying next endpoint...")
+                last_error = e
+                continue
+        
+        # If all endpoints failed, raise an error
+        if response_data is None:
+            error_details = []
+            if last_error:
+                if isinstance(last_error, httpx.HTTPStatusError):
+                    error_details.append(f"Last error: HTTP {last_error.response.status_code}")
+                    try:
+                        error_body = last_error.response.json()
+                        error_details.append(f"Response: {error_body}")
+                    except:
+                        error_details.append(f"Response text: {last_error.response.text[:200]}")
+                else:
+                    error_details.append(f"Last error: {str(last_error)}")
+            
+            # Check if the main issue is subscription-related
+            subscription_issue = False
+            if last_error and isinstance(last_error, httpx.HTTPStatusError):
+                if last_error.response.status_code == 403:
+                    try:
+                        error_body = last_error.response.json()
+                        if "not subscribed" in str(error_body).lower():
+                            subscription_issue = True
+                    except:
+                        pass
+            
+            if subscription_issue:
+                error_message = (
+                    f"❌ API SUBSCRIPTION ISSUE DETECTED\n\n"
+                    + f"The zillow-com1 API endpoint failed. The main issue is:\n"
+                    + f"⚠️  You are NOT subscribed to the 'Zillow.com' API or API key is invalid\n\n"
+                    + f"Error details:\n"
+                    + "\n".join(error_details) + "\n\n"
+                    + f"SOLUTION:\n"
+                    + f"1. Go to RapidAPI Dashboard: https://rapidapi.com/developer/dashboard\n"
+                    + f"2. Subscribe to 'Zillow.com' API (zillow-com1.p.rapidapi.com)\n"
+                    + f"3. Verify your RAPIDAPI_KEY has access to the Zillow.com API\n"
+                    + f"4. The '/propertyExtendedSearch' endpoint requires an active subscription\n"
+                    + f"5. Verify ZILLOW_COM_API_BASE_URL and ZILLOW_COM_API_HOST are set in secrets\n\n"
+                    + f"Endpoint tried:\n"
+                    + "\n".join([f"  - {e['name']}" for e in endpoints_to_try])
                 )
             else:
-                # For other 4xx errors, raise with error message
-                raise ValueError(
-                    f"API request failed with status {error_status}: {error_msg}. "
-                    "Please check your API key and endpoint configuration."
+                error_message = (
+                    f"❌ PROPERTY SEARCH FAILED\n\n"
+                    + f"The zillow-com1 API endpoint failed to return results.\n\n"
+                    + f"Error details:\n"
+                    + "\n".join(error_details) + "\n\n"
+                    + f"Endpoint tried:\n"
+                    + f"- {', '.join([e['name'] for e in endpoints_to_try])}\n\n"
+                    + "TROUBLESHOOTING:\n"
+                    + "1. Check that your RAPIDAPI_KEY is correct and active\n"
+                    + "2. Verify you have an active subscription to the 'Zillow.com' API (zillow-com1.p.rapidapi.com)\n"
+                    + f"3. Check the API endpoint is accessible: {settings.zillow_com_api_base_url}/propertyExtendedSearch\n"
+                    + "4. Verify ZILLOW_COM_API_BASE_URL and ZILLOW_COM_API_HOST are set in Streamlit secrets\n"
+                    + "5. Check RapidAPI dashboard for available endpoints and quota status\n"
+                    + "6. The endpoint may be rate-limited - wait a few minutes and try again"
                 )
-        except httpx.RequestError as e:
-            logger.error(f"Network error calling Zillow API: {e}")
-            raise ValueError(
-                f"Network error while connecting to Zillow API: {str(e)}. "
-                "Please check your internet connection and try again."
-            )
-        except Exception as e:
-            logger.error(f"Unexpected error calling Zillow API: {e}", exc_info=True)
-            raise
+            logger.error(error_message)
+            raise ValueError(error_message)
 
         # Parse real API response and convert to Property objects
-        # real-time-zillow-data /search endpoint returns property listings
-        # Handle both array responses and object responses with data array
+        # Handle different API response formats:
+        # 1. zillow-com1 /propertyExtendedSearch - returns properties array
+        # 2. real-time-zillow-data /search - returns {data: array} or array
+        # 3. Property details response with nearbyHomes array
         properties = []
         
         # Log full response structure for debugging
         logger.info(f"Response type: {type(response_data)}")
         if isinstance(response_data, dict):
-            logger.info(f"Response keys: {list(response_data.keys())}")
+            logger.info(f"Response keys: {list(response_data.keys())[:20]}")
             # Log all top-level keys and their types (but limit full response logging)
-            for key, value in response_data.items():
+            for key, value in list(response_data.items())[:10]:
                 if isinstance(value, (dict, list)):
                     value_str = f"{len(value)} items" if isinstance(value, list) else "dict"
                 else:
@@ -300,8 +450,7 @@ async def _search_properties_impl(params: PropertySearchParams) -> List[Property
         elif isinstance(response_data, list):
             logger.info(f"Response is a list with {len(response_data)} items")
         
-        # Extract properties - real-time-zillow-data /search returns property listings
-        # Response may be: array, {data: array}, {results: array}, or {properties: array}
+        # Extract properties - handle different response structures
         props_list = []
         
         if isinstance(response_data, list):
@@ -334,6 +483,14 @@ async def _search_properties_impl(params: PropertySearchParams) -> List[Property
             elif "properties" in response_data:
                 props_list = response_data.get("properties", [])
                 logger.info(f"Found properties in 'properties' key: {len(props_list) if isinstance(props_list, list) else 1}")
+            elif "nearbyHomes" in response_data:
+                # zillow-com1 API property details response includes nearbyHomes array
+                nearby_homes = response_data.get("nearbyHomes", [])
+                if isinstance(nearby_homes, list):
+                    props_list = nearby_homes
+                    logger.info(f"Found {len(props_list)} properties in 'nearbyHomes' key")
+                else:
+                    props_list = []
             elif "error" in response_data or "message" in response_data:
                 # Error response
                 error_msg = response_data.get("error") or response_data.get("message")
@@ -372,12 +529,18 @@ async def _search_properties_impl(params: PropertySearchParams) -> List[Property
         sample_props = []  # For debugging
         
         for prop_data in props_list:
-            # Sample first few properties for debugging
-            if len(sample_props) < 3:
+            # Sample first few properties for debugging - log all available fields
+            if len(sample_props) < 2:
+                # Log all keys in the first property to see what fields are available
+                if len(sample_props) == 0:
+                    logger.info(f"Sample property keys: {list(prop_data.keys())[:30]}")
+                    logger.info(f"Sample property data: {dict(list(prop_data.items())[:10])}")
                 sample_props.append({
                     "bedrooms": prop_data.get("bedrooms"),
                     "bathrooms": prop_data.get("bathrooms"),
                     "homeType": prop_data.get("homeType"),
+                    "propertyType": prop_data.get("propertyType"),
+                    "propertyTypeDimension": prop_data.get("propertyTypeDimension"),
                     "price": prop_data.get("price"),
                 })
             
@@ -407,20 +570,27 @@ async def _search_properties_impl(params: PropertySearchParams) -> List[Property
                 continue
             
             # Property type: flexible matching
+            # Note: If propertyType is None, we trust the API's filtering (since we already filtered by home_type in the request)
             if params.property_type:
-                home_type = prop_data.get("homeType", "").upper()
-                property_type_upper = params.property_type.upper()
-                # Map property types
-                type_mapping = {
-                    "HOUSE": ["SINGLE_FAMILY", "MULTI_FAMILY"],
-                    "CONDO": ["CONDO", "CONDOMINIUM"],
-                    "TOWNHOUSE": ["TOWNHOUSE", "TOWN_HOUSE"],
-                }
-                allowed_types = type_mapping.get(property_type_upper, [property_type_upper])
-                # Check if home_type matches any allowed type
-                if home_type not in allowed_types:
-                    # If no match, skip this property
-                    continue
+                # zillow-com1 API uses propertyType (not homeType) - check propertyType first
+                home_type = prop_data.get("propertyType") or prop_data.get("homeType") or prop_data.get("home_type")
+                if home_type is not None:
+                    # Only filter if homeType is present
+                    home_type = str(home_type).upper()
+                    property_type_upper = params.property_type.upper()
+                    # Map property types
+                    type_mapping = {
+                        "HOUSE": ["SINGLE_FAMILY", "MULTI_FAMILY", "HOUSE", "HOUSES"],
+                        "CONDO": ["CONDO", "CONDOMINIUM", "CONDOS"],
+                        "TOWNHOUSE": ["TOWNHOUSE", "TOWN_HOUSE", "TOWNHOUSES"],
+                    }
+                    allowed_types = type_mapping.get(property_type_upper, [property_type_upper])
+                    # Check if home_type matches any allowed type
+                    if home_type not in allowed_types:
+                        # If no match, skip this property
+                        continue
+                # If homeType is None, trust the API's filtering (we already filtered by home_type in the request)
+                # So we don't exclude properties with None homeType
             
             filtered_props.append(prop_data)
         
@@ -446,54 +616,100 @@ async def _search_properties_impl(params: PropertySearchParams) -> List[Property
         
         for prop_data in filtered_props[:20]:  # Limit to 20 results
             try:
-                # Parse address - API returns address as string and also has separate fields
-                address_str = prop_data.get("address", "")
-                street_address = prop_data.get("streetAddress", "")
-                city = prop_data.get("city", "")
-                state = prop_data.get("state", "")
-                zip_code = str(prop_data.get("zipcode", ""))
+                # Parse address - zillow-com1 API returns address as string: "Street, City, State ZIP"
+                # Also check for nested address object or separate fields
+                address_value = prop_data.get("address", "")
+                street_address = ""
+                city = ""
+                state = ""
+                zip_code = ""
                 
-                # If address string exists but separate fields don't, parse from string
-                if address_str and not street_address:
-                    address_parts = address_str.split(",")
+                # Handle different address formats
+                if isinstance(address_value, dict):
+                    # Nested address object
+                    street_address = address_value.get("streetAddress", "") or address_value.get("street", "") or ""
+                    city = address_value.get("city", "") or ""
+                    state = address_value.get("state", "") or ""
+                    zip_code = str(address_value.get("zipcode", "") or address_value.get("zipCode", "") or "")
+                elif isinstance(address_value, str) and address_value:
+                    # String format: "2309 Aztec Ruin Way, Henderson, NV 89044"
+                    address_parts = [part.strip() for part in address_value.split(",")]
                     if len(address_parts) > 0:
-                        street_address = address_parts[0].strip()
+                        street_address = address_parts[0]
                     if len(address_parts) > 1:
-                        city = address_parts[1].strip()
+                        city = address_parts[1]
                     if len(address_parts) > 2:
-                        state_zip = address_parts[2].strip().split()
+                        # Last part is "State ZIP" - split by space
+                        state_zip = address_parts[2].split()
                         if len(state_zip) > 0:
                             state = state_zip[0]
                         if len(state_zip) > 1:
                             zip_code = state_zip[1]
+                
+                # Fallback to direct fields if address string parsing didn't work
+                if not street_address:
+                    street_address = prop_data.get("streetAddress", "") or ""
+                if not city:
+                    city = prop_data.get("city", "") or ""
+                if not state:
+                    state = prop_data.get("state", "") or ""
+                if not zip_code:
+                    zip_code = str(prop_data.get("zipcode", "") or prop_data.get("zipCode", "") or "")
 
                 # Extract price - API returns as number
                 price = int(prop_data.get("price", 0))
                 
-                # Extract square feet - API uses livingArea
-                square_feet = int(prop_data.get("livingArea", 0))
+                # Extract square feet - API uses livingArea or livingAreaValue
+                square_feet = int(prop_data.get("livingArea", 0) or prop_data.get("livingAreaValue", 0))
                 
-                # Extract property type - API uses homeType
-                home_type = prop_data.get("homeType", "SINGLE_FAMILY")
+                # Extract property type - zillow-com1 API uses propertyType (not homeType)
+                # Priority: propertyType > homeType > home_type > propertyTypeDimension
+                home_type = (
+                    prop_data.get("propertyType") or  # Primary field in zillow-com1 API
+                    prop_data.get("homeType") or 
+                    prop_data.get("home_type") or
+                    prop_data.get("propertyTypeDimension")
+                )
+                
                 # Map to our property types
                 property_type_map = {
                     "SINGLE_FAMILY": "house",
                     "CONDO": "condo",
                     "TOWNHOUSE": "townhouse",
                     "MULTI_FAMILY": "house",
+                    "HOUSE": "house",
+                    "HOUSES": "house",
+                    "CONDOS": "condo",
+                    "TOWNHOUSES": "townhouse",
                 }
-                property_type = property_type_map.get(home_type, "house")
+                
+                if home_type:
+                    property_type = property_type_map.get(str(home_type).upper(), params.property_type or "house")
+                else:
+                    # If homeType is None, use the requested property type (API already filtered by home_type)
+                    property_type = params.property_type or "house"
 
-                # Extract image URL - API uses imgSrc
+                # Extract image URL - API uses imgSrc or miniCardPhotos
                 image_url = prop_data.get("imgSrc", "") or ""
+                if not image_url:
+                    # Try miniCardPhotos array
+                    mini_photos = prop_data.get("miniCardPhotos", [])
+                    if mini_photos and isinstance(mini_photos, list) and len(mini_photos) > 0:
+                        photo = mini_photos[0]
+                        if isinstance(photo, dict):
+                            image_url = photo.get("url", "") or ""
+                        elif isinstance(photo, str):
+                            image_url = photo
                 
                 # Extract bedrooms and bathrooms
-                bedrooms = int(prop_data.get("bedrooms", 0))
-                bathrooms = float(prop_data.get("bathrooms", 0))
+                bedrooms = int(prop_data.get("bedrooms", 0) or 0)
+                bathrooms = float(prop_data.get("bathrooms", 0) or 0)
 
-                # Extract listing URL - API uses detailUrl
-                detail_url = prop_data.get("detailUrl", "")
-                listing_url = detail_url or ""
+                # Extract listing URL - API uses hdpUrl or detailUrl
+                listing_url = prop_data.get("hdpUrl", "") or prop_data.get("detailUrl", "") or ""
+                # If hdpUrl is relative, prepend zillow.com domain
+                if listing_url and listing_url.startswith("/"):
+                    listing_url = f"https://www.zillow.com{listing_url}"
 
                 # Build Property object with all required fields
                 zpid = prop_data.get("zpid")
@@ -502,6 +718,30 @@ async def _search_properties_impl(params: PropertySearchParams) -> List[Property
                 # Build full address
                 address_parts = [p for p in [street_address, city, state, zip_code] if p]
                 property_address = ", ".join(address_parts) if address_parts else address_str or "Address not available"
+                
+                # Extract description
+                description = (
+                    prop_data.get("description") or 
+                    prop_data.get("statusText") or 
+                    prop_data.get("listingMetadata", {}).get("description", "") or 
+                    ""
+                )
+                
+                # Extract year built
+                year_built = prop_data.get("yearBuilt")
+                if year_built:
+                    try:
+                        year_built = int(year_built)
+                    except (ValueError, TypeError):
+                        year_built = None
+                
+                # Extract lot size
+                lot_size = prop_data.get("lotSize") or prop_data.get("lotAreaValue")
+                if lot_size:
+                    try:
+                        lot_size = float(lot_size)
+                    except (ValueError, TypeError):
+                        lot_size = None
                 
                 property_obj = Property(
                     id=property_id,
@@ -515,8 +755,10 @@ async def _search_properties_impl(params: PropertySearchParams) -> List[Property
                     square_feet=square_feet,
                     property_type=property_type,
                     listing_url=listing_url,
-                    description=prop_data.get("description") or prop_data.get("statusText") or "",
+                    description=description,
                     image_url=image_url,
+                    year_built=year_built,
+                    lot_size=lot_size,
                 )
                 properties.append(property_obj)
                 logger.debug(f"Parsed property: {property_obj.id} - {property_obj.address}")
@@ -656,21 +898,44 @@ async def get_property_details(property_id: str) -> Property:
         raise ValueError("RAPIDAPI_KEY not configured. Please set your RapidAPI key in .env file")
 
     try:
-        # Call real Zillow API
-        # Try property ID endpoint first
-        url = f"{settings.zillow_api_base_url}/property-details-zpid"
-        logger.info(f"Fetching property details from Zillow API for: {property_id}")
+        # Try new zillow-com1 API first (primary), then fallback to zillow-working-api
+        # zillow-com1 API /property endpoint
+        url = f"{settings.zillow_com_api_base_url}/property"
+        logger.info(f"Fetching property details from zillow-com1 API for ZPID: {property_id}")
         
+        response_data = None
         try:
-            response_data = await _make_api_request(url, {"zpid": property_id})
+            # Use zillow-com1 API for property details
+            response_data = await _make_api_request(url, {"zpid": property_id}, use_zillow_com_api=True)
+            logger.info(f"Successfully fetched property details from zillow-com1 API")
         except httpx.HTTPStatusError as e:
-            # If zpid endpoint doesn't exist, try alternative endpoint
-            if e.response.status_code == 404:
-                logger.info("ZPID endpoint not available, trying alternative endpoint")
-                alt_url = f"{settings.zillow_api_base_url}/property"
-                response_data = await _make_api_request(alt_url, {"zpid": property_id})
+            # Fallback to zillow-working-api if zillow-com1 fails
+            if e.response.status_code in (403, 404):
+                logger.info("zillow-com1 API endpoint not available, trying zillow-working-api")
+                try:
+                    url = f"{settings.zillow_market_api_base_url}/pro/byzpid"
+                    response_data = await _make_api_request(url, {"zpid": property_id}, use_market_api=True)
+                    # The response structure from /pro/byzpid is different - it's nested in propertyDetails
+                    if "propertyDetails" in response_data:
+                        response_data = response_data["propertyDetails"]
+                except httpx.HTTPStatusError as e2:
+                    # If zpid endpoint doesn't work, try fallback to real-time-zillow-data
+                    if e2.response.status_code in (403, 404):
+                        logger.info("zillow-working-api endpoint not available, trying fallback endpoint")
+                        try:
+                            fallback_url = f"{settings.zillow_api_base_url}/property-details-zpid"
+                            response_data = await _make_api_request(fallback_url, {"zpid": property_id}, use_market_api=False)
+                        except httpx.HTTPStatusError:
+                            # Try one more alternative
+                            alt_url = f"{settings.zillow_api_base_url}/property"
+                            response_data = await _make_api_request(alt_url, {"zpid": property_id}, use_market_api=False)
+                    else:
+                        raise
             else:
                 raise
+        
+        if not response_data:
+            raise ValueError(f"Failed to fetch property details for ZPID: {property_id}")
 
         # Parse real API response with robust error handling
         address_data = response_data.get("address", {})

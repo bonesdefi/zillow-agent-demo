@@ -6,7 +6,6 @@ from typing import Any, Dict
 
 from src.agents.base_agent import BaseAgent, AgentState, AgentMCPError
 from src.mcp_servers.market_analysis_server import (
-    get_neighborhood_stats_direct,
     get_school_ratings_direct,
     get_market_trends_direct,
     calculate_affordability_direct,
@@ -24,7 +23,7 @@ class AnalysisAgent(BaseAgent):
     This agent:
     1. Takes properties from state
     2. Analyzes each using Market Analysis MCP server
-    3. Gathers neighborhood data, schools, market trends
+    3. Gathers schools, market trends, and comparable sales
     4. Calculates affordability if income provided
     5. Returns detailed analysis in state
     """
@@ -110,15 +109,6 @@ class AnalysisAgent(BaseAgent):
             zpid = str(zpid)
 
         try:
-            # Get neighborhood stats - use ZPID if available for better data
-            neighborhood = await get_neighborhood_stats_direct(location, zpid=zpid)
-            analysis["neighborhood"] = neighborhood.model_dump()
-
-        except Exception as e:
-            self.logger.warning(f"Failed to get neighborhood stats: {e}")
-            analysis["neighborhood"] = None
-
-        try:
             # Get school ratings - use ZPID if available for better data
             schools = await get_school_ratings_direct(location, radius=5, zpid=zpid)
             analysis["schools"] = [s.model_dump() for s in schools]
@@ -192,24 +182,13 @@ Required JSON format:
     "overall": "brief overall assessment"
 }
 
-Focus on: location, price, schools, market trends, neighborhood quality.
+Focus on: location, price, schools, market trends, property value, and comparable sales.
 
 Return ONLY the JSON object, nothing else."""
 
         # Build user message with available data
-        neighborhood_info = "Available" if analysis.get('neighborhood') else "Not available"
         schools_info = f"{len(analysis.get('schools', []))} schools found" if analysis.get('schools') else "No school data available"
         trends_info = "Available" if analysis.get('market_trends') else "Not available"
-        
-        # Extract useful info from neighborhood stats if available
-        neighborhood_details = ""
-        if analysis.get('neighborhood') and isinstance(analysis.get('neighborhood'), dict):
-            nb = analysis['neighborhood']
-            if nb.get('demographics'):
-                demo = nb['demographics']
-                neighborhood_details = f"Demographics: Population {demo.get('population', 'N/A')}, Median Income ${demo.get('median_income', 0):,}"
-            if nb.get('overall_score'):
-                neighborhood_details += f", Overall Score: {nb['overall_score']:.1f}/100"
         
         # Extract useful info from market trends if available
         trends_details = ""
@@ -226,7 +205,6 @@ Square Feet: {property_data.get('square_feet', 'N/A')}
 Property Type: {property_data.get('property_type', 'N/A')}
 
 Analysis Data Available:
-- Neighborhood: {neighborhood_info} {neighborhood_details}
 - Schools: {schools_info}
 - Market Trends: {trends_info} {trends_details}
 
@@ -295,8 +273,6 @@ Generate a comprehensive analysis focusing on what data IS available. If market 
                 pros.append(f"{bathrooms} bathrooms - Convenient")
             
             # Generate cons based on missing data
-            if not analysis.get("neighborhood"):
-                cons.append("Neighborhood demographics and safety data unavailable")
             if len(analysis.get("schools", [])) == 0:
                 cons.append("School ratings and information unavailable")
             if not analysis.get("market_trends"):
