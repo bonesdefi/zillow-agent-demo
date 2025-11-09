@@ -6,6 +6,8 @@ A production-quality multi-agent AI system using LangGraph orchestration with cu
 
 🌐 **Live Demo**: [https://zillow-agent-demo.streamlit.app/](https://zillow-agent-demo.streamlit.app/)
 
+📄 **Project Documentation**: [View PDF](https://michaeljpento.lv/zillow-agent-demo.pdf)
+
 ![Real Estate AI Assistant UI](docs/images/streamlit-ui-screenshot.png)
 
 *Streamlit UI showing property search results with AI analysis, school information, and market trends*
