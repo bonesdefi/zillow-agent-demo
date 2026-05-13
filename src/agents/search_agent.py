@@ -89,7 +89,10 @@ class SearchAgent(BaseAgent):
 
     async def _extract_search_criteria(self, user_input: str) -> Dict[str, Any]:
         """
-        Extract structured search criteria from natural language.
+        Extract structured search criteria from natural language using tool_use.
+
+        Uses Anthropic's tool_use API to force structured JSON output, which
+        eliminates JSON parsing failures across all Claude model versions.
 
         Args:
             user_input: User's natural language query
@@ -97,51 +100,72 @@ class SearchAgent(BaseAgent):
         Returns:
             Dictionary with search criteria
         """
-        system_prompt = """You are a real estate search assistant. Extract structured search criteria from user queries.
+        extraction_tool = {
+            "name": "extract_search_criteria",
+            "description": (
+                "Extract structured real estate search criteria from a user's "
+                "natural language query. Only populate fields the user explicitly "
+                "mentions or clearly implies."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "location": {
+                        "type": "string",
+                        "description": "City and state, or ZIP code (e.g. 'Las Vegas, NV' or '89101')"
+                    },
+                    "min_price": {"type": "integer", "description": "Minimum price in USD"},
+                    "max_price": {"type": "integer", "description": "Maximum price in USD"},
+                    "bedrooms": {"type": "integer", "description": "Number of bedrooms"},
+                    "bathrooms": {"type": "number", "description": "Number of bathrooms"},
+                    "property_type": {
+                        "type": "string",
+                        "enum": ["house", "condo", "townhouse", "apartment"]
+                    },
+                    "confidence": {
+                        "type": "string",
+                        "enum": ["high", "medium", "low"],
+                        "description": (
+                            "high = specific query with clear criteria; "
+                            "medium = some details but ambiguous; "
+                            "low = vague terms like 'affordable' or no location"
+                        )
+                    }
+                },
+                "required": ["confidence"]
+            }
+        }
 
-Output JSON with these fields (all optional):
-{
-    "location": "City, State or ZIP",
-    "min_price": integer,
-    "max_price": integer,
-    "bedrooms": integer,
-    "bathrooms": float,
-    "property_type": "house|condo|townhouse|apartment",
-    "confidence": "high|medium|low"
-}
+        system_prompt = (
+            "You are a real estate search assistant. Use the extract_search_criteria "
+            "tool to parse the user's query into structured fields. Only include "
+            "fields explicitly mentioned or clearly implied. Use confidence='low' "
+            "for vague terms like 'affordable' or when location is missing."
+        )
 
-Rules:
-- Only include fields mentioned or clearly implied
-- Use null for missing information
-- Set confidence based on query clarity
-- For vague terms like "affordable", use confidence: "low"
-
-Examples:
-"3 bedroom house in Austin under 600k" →
-{"location": "Austin, TX", "max_price": 600000, "bedrooms": 3, "property_type": "house", "confidence": "high"}
-
-"Something affordable in the suburbs" →
-{"confidence": "low"}"""
-
-        user_message = f"Extract search criteria from: '{user_input}'"
-
-        self.logger.info(f"Calling LLM to extract search criteria")
+        self.logger.info("Calling LLM with tool_use for criteria extraction")
         try:
-            response = await self._call_llm(system_prompt, user_message, temperature=0.3)
-            self.logger.info(f"LLM response received: {response[:200] if len(response) > 200 else response}")
+            response = await self.client.messages.create(
+                model=self.model,
+                max_tokens=1024,
+                temperature=0.3,
+                system=system_prompt,
+                tools=[extraction_tool],
+                tool_choice={"type": "tool", "name": "extract_search_criteria"},
+                messages=[{"role": "user", "content": f"Extract search criteria from: '{user_input}'"}],
+            )
         except Exception as e:
-            self.logger.error(f"LLM call failed: {e}", exc_info=True)
+            self.logger.error(f"LLM tool_use call failed: {e}", exc_info=True)
             raise
 
-        try:
-            # Parse JSON response
-            criteria = json.loads(response)
-            self.logger.info(f"Extracted criteria: {criteria}")
-            return criteria
-        except json.JSONDecodeError as e:
-            self.logger.error(f"Failed to parse LLM response as JSON: {response}")
-            self.logger.error(f"JSON decode error: {e}")
-            return {"confidence": "low"}
+        for block in response.content:
+            if block.type == "tool_use":
+                criteria = dict(block.input)
+                self.logger.info(f"Extracted criteria via tool_use: {criteria}")
+                return criteria
+
+        self.logger.error("No tool_use block in LLM response — falling back to low confidence")
+        return {"confidence": "low"}
 
     def _needs_clarification(self, criteria: Dict[str, Any]) -> bool:
         """
